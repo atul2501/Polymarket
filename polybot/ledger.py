@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS trades(
     status TEXT DEFAULT 'open', payout REAL DEFAULT 0, pnl REAL);
 CREATE TABLE IF NOT EXISTS scans(
     slug TEXT PRIMARY KEY, asset TEXT, window TEXT, window_start INTEGER, best_sum REAL, ticks INTEGER);
+CREATE TABLE IF NOT EXISTS prints(t REAL, asset TEXT, price REAL, size REAL, side TEXT);
 CREATE TABLE IF NOT EXISTS ticks(
     t REAL, slug TEXT, window_end INTEGER, t_left REAL, up_bid REAL, up_ask REAL, up_ask_size REAL,
     dn_bid REAL, dn_ask REAL, dn_ask_size REAL, spot REAL, beat REAL, known REAL, sigma REAL, p_model REAL);
@@ -70,6 +71,12 @@ class Ledger:
                         (now, m.slug, m.end, s.t_left, s.up.bid, s.up.ask, s.up.ask_size, s.down.bid, s.down.ask,
                          s.down.ask_size, spot, beat, known, sigma, s.p_up))
         self.db.commit()
+
+    def prints(self, rows):
+        """Raw CLOB trade prints (t, asset, price, size, taker side) for future replays."""
+        if rows:
+            self.db.executemany("INSERT INTO prints VALUES (?,?,?,?,?)", rows)
+            self.db.commit()
 
     def traded(self, slug, strategy):
         return self._one("SELECT count(*) FROM trades WHERE slug=? AND strategy=?", slug, strategy) > 0

@@ -157,6 +157,11 @@ class BookFeed:
                 log.warning("book socket: %r, reconnecting", e)
                 await asyncio.sleep(1)
 
+    def depth(self, asset, price):
+        """Size resting on the bid at `price` (what sits ahead of a new bid we place there)."""
+        with self.lock:
+            return (self.books.get(asset) or {}).get("bids", {}).get(round(price, 3), 0.0)
+
     def book(self, asset, max_age=15):
         """engine.Book from the live socket, or None if we have no fresh snapshot for it."""
         with self.lock:

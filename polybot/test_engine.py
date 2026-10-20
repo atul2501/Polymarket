@@ -106,6 +106,33 @@ def main():
         assert not led.open_positions("y") and led.entries("y", "fair") == 1
         led.settle("y", "Down")  # must not touch the sold row
         assert led._one("SELECT status FROM trades WHERE id=?", tid) == "sold"
+    # mm v2: direction filter, never above best bid, lean, pull, queue-aware fills, top-up limits
+    import mm
+    assert mm.quote("Up", 0.30, 0.32, 0.35, 0, 0, False) is None                 # model gives UP < 0.40 -> no bid
+    q = mm.quote("Up", 0.50, 0.52, 0.80, 0, 0, False)
+    assert q is not None and q <= 0.50 and q <= 0.51 - mm.BOOK_DELTA + 1e-9       # model says 0.80: price still from the book
+    assert mm.quote("Up", 0.50, 0.52, 0.60, 0, 0, True) is None                  # pulled
+    mm.LEAN = 0.001
+    assert mm.quote("Up", 0.50, 0.52, 0.60, 30, 0, False) < mm.quote("Up", 0.50, 0.52, 0.60, 0, 0, False)  # heavy -> lower
+    mm.DIR_K = 0.5
+    assert mm.target_skew(0.8, 100) > 0 and mm.target_skew(0.2, 100) < 0
+    r = mm.Round(None)
+    r.place("Up", 0.45, 20)                         # 20 shares ahead of us at 0.45
+    assert r.fill("Up", [("SELL", "Up", 0.45, 15)]) == 0 and r.resting["Up"][1] == 5   # queue eaten first
+    assert r.fill("Up", [("SELL", "Up", 0.45, 12)]) == 7                              # 5 more ahead, then 7 to us
+    assert r.fill("Up", [("BUY", "Down", 0.60, 10)]) == 10    # a taker buying DOWN at 0.60 hits UP bids at 0.40: through us
+    r.place("Up", 0.45, 99)
+    assert r.resting["Up"][1] == 0                  # same price keeps our queue spot
+    mm.PULL_MOVE = 0.10
+    r2 = mm.Round(None)
+    r2.update_pulls(0, 0.50)
+    r2.update_pulls(5, 0.65)
+    assert r2.pulled_until["Up"] > 5
+    ask = lambda a, n: type("B", (), {"ask": a, "ask_size": n})()
+    mm.TOPUP_MIN = 0.90
+    assert mm.topup(mm.Round(None), 90, 0.95, {"Up": ask(0.84, 50), "Down": ask(0.16, 50)}) == ("Up", 0.84, 10)
+    assert mm.topup(mm.Round(None), 90, 0.95, {"Up": ask(0.90, 50), "Down": ask(0.10, 50)}) is None   # too expensive
+    assert mm.topup(mm.Round(None), 150, 0.95, {"Up": ask(0.84, 50), "Down": ask(0.16, 50)}) is None  # too early
     print("ok")
 
 
