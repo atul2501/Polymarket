@@ -20,10 +20,11 @@ from pathlib import Path
 import requests
 
 import config
-from engine import Leg
-from feeds import BookFeed
+from engine import Leg, fair_up
+from feeds import BookFeed, ChainlinkFeed
 from ledger import Ledger
 from market import MarketFeed
+from spot import SpotFeed
 
 log = logging.getLogger("mm")
 DELTA = float(os.getenv("MM_DELTA", 0.015))
@@ -31,14 +32,16 @@ CLIP = float(os.getenv("MM_CLIP", 10))            # shares per fill (the wallet 
 MAX_SKEW = float(os.getenv("MM_MAX_SKEW", 40))    # max |UP - DOWN| shares before we stop buying the heavy side
 BUDGET = float(os.getenv("MM_BUDGET", 60))        # max $ spent per round
 STOP_SEC = float(os.getenv("MM_STOP_SEC", 50))
+CENTER = os.getenv("MM_CENTER", "model")          # "model" = Chainlink TWAP model P(up) (replay: + both halves),
+# "mid" = UP book mid (replay: -$8 at delta 0.015)
 LEDGER = Path(os.getenv("MM_LEDGER", Path(__file__).parent / "runs" / "mm.db"))
 
 
-def quotes(up_bid, up_ask, dn_ask):
-    """(UP bid, DOWN bid) around the UP mid, each kept one tick under its own ask so it rests on the book."""
+def quotes(up_bid, up_ask, dn_ask, p_model=None):
+    """(UP bid, DOWN bid) around the centre, each kept one tick under its own ask so it rests on the book."""
     if up_bid is None or up_ask is None:
         return None
-    mid = (up_bid + up_ask) / 2
+    mid = p_model if CENTER == "model" and p_model is not None else (up_bid + up_ask) / 2
     qu = min(floor((mid - DELTA) * 100) / 100, round(up_ask - 0.01, 2))
     qd = floor((1 - mid - DELTA) * 100) / 100
     if dn_ask is not None:
@@ -66,6 +69,7 @@ class Round:
 
     def __init__(self, m):
         self.m, self.sh, self.cost = m, {"Up": 0.0, "Down": 0.0}, 0.0
+        self.resting = None  # (UP bid, DOWN bid) placed on the previous tick: these are what new prints can hit
 
     def take(self, side, bid, prints):
         """Fill our resting bid on `side` from prints; returns shares bought (capped by clip, skew and budget)."""
@@ -92,8 +96,10 @@ def live():
     http = requests.Session()
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
+    spot = SpotFeed(http, ChainlinkFeed(["btc/usd"]).start())
     rounds, last_seen, last_settle, last_log = {}, time.time(), 0.0, 0.0
-    log.info("mm start | PAPER | delta %.3f clip %g max_skew %g budget $%g/round stop %gs", DELTA, CLIP, MAX_SKEW, BUDGET, STOP_SEC)
+    log.info("mm start | PAPER | centre %s delta %.3f clip %g max_skew %g budget $%g/round stop %gs",
+             CENTER, DELTA, CLIP, MAX_SKEW, BUDGET, STOP_SEC)
     while True:
         try:
             now = time.time()
@@ -105,18 +111,26 @@ def live():
                 r = rounds.setdefault(m.slug, Round(m))
                 t_left = m.seconds_left(now)
                 up, dn = books[m.up_token], books[m.down_token]
-                q = quotes(up.bid, up.ask, dn.ask) if t_left > STOP_SEC else None
-                if q:
+                if r.resting:  # prints since the last tick can only hit the quotes that were resting then
                     mine = [(ps, side_of(m, a), price, size) for (_, a, price, size, ps) in prints if side_of(m, a)]
-                    for side, bid in (("Up", q[0]), ("Down", q[1])):
+                    for side, bid in (("Up", r.resting[0]), ("Down", r.resting[1])):
                         if n := r.take(side, bid, mine):
                             led.record(m, "mm", Leg(side, bid, n, 0.0))
                             log.info("[BTC 5m] MM FILL %s @ %.2f x%g | inv UP %g DN %g cost $%.2f", side, bid, n,
                                      r.sh["Up"], r.sh["Down"], r.cost)
+                pm = None
+                if CENTER == "model":
+                    sp, beat, known, src = spot.view(m.asset, m.start, m.end, now)
+                    if sp is None or beat is None or src != "chainlink":
+                        r.resting = None  # no quotes without the resolution price
+                        continue
+                    pm = fair_up(sp, beat, spot.sigma(m.asset) * config.VOL_MULT, t_left, known)
+                q = quotes(up.bid, up.ask, dn.ask, pm) if t_left > STOP_SEC else None
+                r.resting = q
                 if now - last_log >= 5:
                     last_log = now
-                    log.info("[BTC 5m] %3ds | UP %s/%s | quotes %s | inv UP %g DN %g | cost $%.2f", t_left, up.bid, up.ask,
-                             q, r.sh["Up"], r.sh["Down"], r.cost)
+                    log.info("[BTC 5m] %3ds | UP %s/%s | model %s | quotes %s | inv UP %g DN %g | cost $%.2f", t_left,
+                             up.bid, up.ask, f"{pm:.3f}" if pm is not None else "-", q, r.sh["Up"], r.sh["Down"], r.cost)
             if now - last_settle > 30:
                 last_settle = now
                 for slug in led.unsettled(now):
@@ -136,9 +150,9 @@ def replay(address, dbs):
     trades = fetch_trades(http, address, 3000)
     ticks = {}
     for db in dbs:
-        for t, slug, end, t_left, ub, ua, dbid, da in sqlite3.connect(db).execute(
-                "SELECT t, slug, window_end, t_left, up_bid, up_ask, dn_bid, dn_ask FROM ticks ORDER BY t"):
-            ticks.setdefault(slug, []).append((t, t_left, ub, ua, dbid, da))
+        for t, slug, end, t_left, ub, ua, dbid, da, pm in sqlite3.connect(db).execute(
+                "SELECT t, slug, window_end, t_left, up_bid, up_ask, dn_bid, dn_ask, p_model FROM ticks ORDER BY t"):
+            ticks.setdefault(slug, []).append((t, t_left, ub, ua, dbid, da, pm))
     import bisect
     by = {}
     for x in trades:
@@ -160,13 +174,13 @@ def replay(address, dbs):
         m = type("M", (), {"slug": slug})()
         r = Round(m)
         prints = sorted(by[slug])
-        for t, t_left, ub, ua, dbid, da in ticks[slug]:
-            q = quotes(ub, ua, da) if t_left > STOP_SEC else None
-            if not q:
-                continue
-            now_prints = [(ps, side, price, size) for (pt, ps, side, price, size) in prints if t - 1 < pt <= t]
-            for side, bid in (("Up", q[0]), ("Down", q[1])):
-                r.take(side, bid, now_prints)
+        prev_t = None
+        for t, t_left, ub, ua, dbid, da, pm in ticks[slug]:
+            if r.resting and prev_t is not None:  # prints since the last tick hit the quotes resting since then
+                now_prints = [(ps, side, price, size) for (pt, ps, side, price, size) in prints if prev_t < pt <= t]
+                for side, bid in (("Up", r.resting[0]), ("Down", r.resting[1])):
+                    r.take(side, bid, now_prints)
+            r.resting, prev_t = (quotes(ub, ua, da, pm) if t_left > STOP_SEC else None), t
         pnl = r.sh[w] - r.cost
         total += pnl
         rows.append((slug, r.sh["Up"], r.sh["Down"], r.cost, w, pnl))
