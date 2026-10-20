@@ -100,10 +100,15 @@ class BookFeed:
         self.updated = {}      # asset_id -> unix time of last message
         self.assets = set()
         self.lock = threading.Lock()
+        self.prints = []       # (unix time, asset_id, price, size, taker side) from last_trade_price events
 
     def start(self):
         _thread(self._run)
         return self
+
+    def trades_since(self, t):
+        with self.lock:
+            return [x for x in self.prints if x[0] > t]
 
     def watch(self, assets):
         self.assets = set(assets)  # a change makes _run reconnect with the new list
@@ -111,6 +116,10 @@ class BookFeed:
     def _apply(self, ev):
         now = time.time()
         with self.lock:
+            if ev.get("event_type") == "last_trade_price":
+                self.prints.append((now, ev["asset_id"], float(ev["price"]), float(ev["size"]), ev["side"]))
+                if len(self.prints) > 5000:
+                    del self.prints[:-2000]
             if "bids" in ev and "asks" in ev and "asset_id" in ev:  # full snapshot
                 self.books[ev["asset_id"]] = {
                     "bids": {float(o["price"]): float(o["size"]) for o in ev["bids"]},
