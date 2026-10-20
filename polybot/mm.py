@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 
 import config
-from engine import Leg, fair_up
+from engine import Leg, Snapshot, fair_up
 from feeds import BookFeed, ChainlinkFeed
 from ledger import Ledger
 from market import MarketFeed
@@ -124,7 +124,9 @@ def live():
                     if sp is None or beat is None or src != "chainlink":
                         r.resting = None  # no quotes without the resolution price
                         continue
-                    pm = fair_up(sp, beat, spot.sigma(m.asset) * config.VOL_MULT, t_left, known)
+                    sig = spot.sigma(m.asset)
+                    pm = fair_up(sp, beat, sig * config.VOL_MULT, t_left, known)
+                    led.tick(now, m, Snapshot(up, dn, t_left, m.fee, 0.0, pm), sp, beat, known, sig)
                 q = quotes(up.bid, up.ask, dn.ask, pm) if t_left > STOP_SEC else None
                 r.resting = q
                 if now - last_log >= 5:
