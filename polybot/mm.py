@@ -29,9 +29,12 @@ from spot import SpotFeed
 log = logging.getLogger("mm")
 DELTA = float(os.getenv("MM_DELTA", 0.015))
 CLIP = float(os.getenv("MM_CLIP", 10))            # shares per fill (the wallet uses 30; we run ~1/3 size)
-MAX_SKEW = float(os.getenv("MM_MAX_SKEW", 40))    # max |UP - DOWN| shares before we stop buying the heavy side
+MAX_SKEW = float(os.getenv("MM_MAX_SKEW", 20))    # max |UP - DOWN| shares before we stop buying the heavy side
+# (replay, 33 rounds: 20 -> +$57.99, worst round -$6.92; 40 -> +$73.83, worst -$16.54)
 BUDGET = float(os.getenv("MM_BUDGET", 60))        # max $ spent per round
 STOP_SEC = float(os.getenv("MM_STOP_SEC", 50))
+PAIR_MAX = float(os.getenv("MM_PAIR_MAX", 9))     # skip a fill if its price + other side's avg > this; off by default:
+# at 0.98 it blocked rebalancing and cut replay PnL (+$39.95 vs +$57.99 at skew 20)
 CENTER = os.getenv("MM_CENTER", "model")          # "model" = Chainlink TWAP model P(up) (replay: + both halves),
 # "mid" = UP book mid (replay: -$8 at delta 0.015)
 LEDGER = Path(os.getenv("MM_LEDGER", Path(__file__).parent / "runs" / "mm.db"))
@@ -69,12 +72,28 @@ class Round:
 
     def __init__(self, m):
         self.m, self.sh, self.cost = m, {"Up": 0.0, "Down": 0.0}, 0.0
-        self.resting = None  # (UP bid, DOWN bid) placed on the previous tick: these are what new prints can hit
+        self.side_cost = {"Up": 0.0, "Down": 0.0}
+        self.resting = None   # (UP bid, DOWN bid) placed on the previous tick: these are what new prints can hit
+        self.rebalance = None  # side being bought back to even after the gap hit MAX_SKEW
+
+    def room(self, side, bid):
+        """Shares we may still buy on `side` at `bid`."""
+        other = "Down" if side == "Up" else "Up"
+        d = self.sh[side] - self.sh[other]
+        if self.rebalance == other:   # rebalancing toward `other`: don't add to this side
+            return 0.0
+        if self.rebalance == side:    # buy only up to even, then quote normally again
+            limit = -d
+        else:
+            limit = MAX_SKEW - d
+        if self.sh[other] and bid + self.side_cost[other] / self.sh[other] > PAIR_MAX:
+            return 0.0                # this fill would make the pair cost more than PAIR_MAX
+        return max(0.0, min(CLIP, limit, (BUDGET - self.cost) / bid))
 
     def take(self, side, bid, prints):
-        """Fill our resting bid on `side` from prints; returns shares bought (capped by clip, skew and budget)."""
+        """Fill our resting bid on `side` from prints; returns shares bought (capped by clip, skew, pair cost, budget)."""
         other = "Down" if side == "Up" else "Up"
-        room = min(CLIP, max(0.0, MAX_SKEW - (self.sh[side] - self.sh[other])), (BUDGET - self.cost) / bid)
+        room = self.room(side, bid)
         got = 0.0
         for ps, pa, price, size in prints:
             if room - got < 1:
@@ -84,6 +103,12 @@ class Round:
         if got >= 1:
             self.sh[side] += got
             self.cost += got * bid
+            self.side_cost[side] += got * bid
+            d = self.sh[side] - self.sh[other]
+            if d >= MAX_SKEW:
+                self.rebalance = other
+            elif self.rebalance == side and d >= 0:
+                self.rebalance = None
         return got
 
 
