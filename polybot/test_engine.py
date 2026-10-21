@@ -136,12 +136,25 @@ def main():
     # mm pairing: finish a pair at <= PAIR_TARGET, never add to the side already ahead
     rp = mm.Round(None)
     rp.buy("Up", 0.55, 10)                                           # UP filled at 0.55, unpaired
-    assert mm.pair_quote(rp, "Up", 0.54, 0.56, 0.60, rp.skew(), 0, False) is None     # heavy side: no new bid
+    assert mm.pair_quote(rp, "Up", 0.54, 0.56, 0.60, rp.skew(), 0, False) <= 0.55 - mm.AVG_STEP + 1e-9  # heavy: only averaging down
     assert mm.pair_quote(rp, "Down", 0.44, 0.46, 0.20, rp.skew(), 0, False) == 0.42  # 0.97 - 0.55, even though model says 20%
     bk = lambda a, n: type("B", (), {"ask": a, "ask_size": n})()
     take = mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.41, 50)}, FEE)
     assert take and take[0] == "Down" and take[2] == 10                              # 0.55 + 0.41 + fee <= 0.97
     assert mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.44, 50)}, FEE) is None  # 0.99: too expensive
+    # mm v4: average down on the heavy side, pair cap rises as the heavy average falls, fast-move pull/boost
+    r4 = mm.Round(None)
+    r4.buy("Up", 0.39, 10)
+    assert mm.pair_quote(r4, "Up", 0.38, 0.39, 0.60, r4.skew(), 0, False) <= 0.37          # heavy at avg 0.39: bid <= 0.37
+    assert mm.pair_quote(r4, "Up", 0.30, 0.31, 0.60, r4.skew(), 0, False) is not None      # cheaper than avg - 2c: average down
+    assert mm.pair_quote(r4, "Down", 0.60, 0.62, 0.40, r4.skew(), 0, False) == 0.58         # 0.97 - 0.39
+    r4.buy("Up", 0.13, 10)                                                                  # averaged down to 0.26
+    assert mm.pair_quote(r4, "Down", 0.80, 0.82, 0.40, r4.skew(), 0, False) == 0.71         # cap rose: 0.97 - 0.26
+    assert r4.fast_move(100, 3.0) == "Up" and r4.pulled_until["Down"] > 100 and r4.boost_until["Up"] > 100
+    assert r4.fast_move(100.5, 3.0) is None                                                 # same move: logged once
+    assert r4.fast_move(101, 1.0) is None                                                   # small move ignored
+    boosted = mm.quote("Up", 0.50, 0.52, 0.80, 0, 0, False, 0.0)
+    assert boosted == 0.50                                                                  # boost bids at the best bid
     print("ok")
 
 

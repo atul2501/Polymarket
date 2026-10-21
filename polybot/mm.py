@@ -28,7 +28,7 @@ import requests
 
 import config
 from engine import Leg, Snapshot, fair_up, taker_fee
-from feeds import BookFeed, ChainlinkFeed
+from feeds import BinanceFeed, BookFeed, ChainlinkFeed
 from ledger import Ledger
 from market import MarketFeed
 from spot import SpotFeed
@@ -40,7 +40,11 @@ BOOK_DELTA = _f("MM_BOOK_DELTA", 0.015)  # ...and at least this far under the bo
 CLIP = _f("MM_CLIP", 10)               # shares per fill
 MAX_SKEW = _f("MM_MAX_SKEW", 20)       # hard cap on |UP - DOWN| shares (v2 at 40 lost $94 in 5 reversal rounds)
 PAIR_TARGET = _f("MM_PAIR_TARGET", 0.97)  # complete a pair while UP avg + DOWN price (+ fee) <= this
-PAIR_MIN = _f("MM_PAIR_MIN", 5)           # once one side is this many shares ahead, only work on pairing it
+PAIR_MIN = _f("MM_PAIR_MIN", 5)           # once one side is this many shares ahead, it is "heavy"
+AVG_STEP = _f("MM_AVG_STEP", 0.02)        # heavy side may only add at <= its average - this (average down, like the wallet)
+FAST_BPS, FAST_WINDOW, FAST_SEC = _f("MM_FAST_BPS", 2), _f("MM_FAST_WINDOW", 3), _f("MM_FAST_SEC", 3)
+NOWCAST = os.getenv("MM_NOWCAST", "1") != "0"  # model spot = Chainlink + Binance move since the Chainlink point
+LOOP_SEC = _f("MM_LOOP_SEC", 0.1)         # Polymarket follows Binance within ~0.4 s
 BUDGET = _f("MM_BUDGET", 50)           # $ per round
 STOP_SEC = _f("MM_STOP_SEC", 20)
 MIN_SIDE = _f("MM_MIN_SIDE", 0.40)     # real fills overnight: -$65.29 -> +$5.58 with this alone
@@ -64,29 +68,35 @@ def target_skew(p_up, total):
     return max(-MAX_SKEW, min(MAX_SKEW, DIR_K * (p_up - 0.5) * total))
 
 
-def quote(side, bid, ask, value, skew, target, pulled):
+def quote(side, bid, ask, value, skew, target, pulled, book_delta=None):
     """Our bid for one side, or None. skew = UP - DOWN shares; lean pushes inventory toward `target`."""
     if bid is None or ask is None or value < MIN_SIDE or pulled:
         return None
     excess = (skew - target) if side == "Up" else (target - skew)   # > 0: we already hold too much of this side
-    px = min((bid + ask) / 2 - BOOK_DELTA, bid, value - DELTA) - LEAN * excess
+    bd = BOOK_DELTA if book_delta is None else book_delta
+    px = min((bid + ask) / 2 - bd, bid, value - DELTA) - LEAN * excess
     px = min(floor(px * 100 + 1e-9) / 100, bid)                       # never above the best bid
     return px if px >= 0.01 else None
 
 
-def pair_quote(r, side, bid, ask, value, skew, target, pulled):
-    """Bid for `side` with pairing first: the wallet pairs a fill within ~3 s at ~$0.95; v2 waited ~30 s and
-    BTC moved in between (pairs up to $1.33). Light side: bid up to PAIR_TARGET - avg of the heavy side, ignoring the
-    direction filter (a pair at <= PAIR_TARGET is profit either way). Heavy side: no new bid."""
+def pair_quote(r, side, bid, ask, value, skew, target, pulled, boosted=False):
+    """Bid for `side`, pairing first, like the copied wallet (round 10:10PM ET: it bought UP all the way down to an
+    average of $0.24, which let DOWN at $0.67 still pair at $0.91).
+    - light side: bid up to PAIR_TARGET - heavy side's average (that cap rises as the heavy side averages down),
+      ignoring the direction filter, since a pair at <= PAIR_TARGET is profit either way
+    - heavy side: may keep buying, but only at <= its own average - AVG_STEP
+    - otherwise: normal quote; `boosted` (Binance just moved toward this side) bids up to the book mid"""
     o = other(side)
-    if r.sh[o] - r.sh[side] >= PAIR_MIN:          # we're short this side: finish the pair
+    if r.sh[o] - r.sh[side] >= PAIR_MIN:
         if bid is None:
             return None
         px = min(floor((PAIR_TARGET - r.avg(o)) * 100 + 1e-9) / 100, bid)
         return px if px >= 0.01 else None
-    if r.sh[side] - r.sh[o] >= PAIR_MIN:          # we're long this side: wait for the other leg
-        return None
-    return quote(side, bid, ask, value, skew, target, pulled)
+    px = quote(side, bid, ask, value, skew, target, pulled, 0.0 if boosted else None)
+    if px is not None and r.sh[side] - r.sh[o] >= PAIR_MIN:
+        px = min(px, floor((r.avg(side) - AVG_STEP) * 100 + 1e-9) / 100)
+        return px if px >= 0.01 else None
+    return px
 
 
 def pair_take(r, books_by_side, fee):
@@ -123,7 +133,18 @@ class Round:
         self.resting = {"Up": None, "Down": None}  # side -> [price, size ahead of us in the queue]
         self.hist = []                               # (t, p_up) for the pull rule
         self.pulled_until = {"Up": 0.0, "Down": 0.0}
+        self.boost_until = {"Up": 0.0, "Down": 0.0}
         self.topped = False
+
+    def fast_move(self, now, bps):
+        """Binance moved `bps` in FAST_WINDOW: step away from the side about to be sold, lean into the other."""
+        if bps is None or abs(bps) < FAST_BPS:
+            return None
+        rising = "Up" if bps > 0 else "Down"
+        started = now >= self.boost_until[rising]
+        self.pulled_until[other(rising)] = now + FAST_SEC
+        self.boost_until[rising] = now + FAST_SEC
+        return rising if started else None   # report only the start of a move
 
     def skew(self):
         return self.sh["Up"] - self.sh["Down"]
@@ -202,9 +223,13 @@ def live():
     http = requests.Session()
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
-    spot = SpotFeed(http, ChainlinkFeed(["btc/usd"]).start())
+    chain = ChainlinkFeed(["btc/usd"]).start()
+    spot = SpotFeed(http, chain)
+    bn = BinanceFeed().start()
     rounds, last_seen, last_settle, last_log = {}, time.time(), 0.0, 0.0
-    log.info("mm v2 start | PAPER | min_side %.2f dir_k %.2f book_delta %.3f delta %.3f clip %g max_skew %g budget $%g "
+    log.info("mm v4 start | PAPER | pair target %.2f avg step %.2f fast %g bp/%gs nowcast %s loop %.2fs |",
+             PAIR_TARGET, AVG_STEP, FAST_BPS, FAST_WINDOW, NOWCAST, LOOP_SEC)
+    log.info("mm settings | min_side %.2f dir_k %.2f book_delta %.3f delta %.3f clip %g max_skew %g budget $%g "
              "stop %gs pull %.2f/%gs topup >=%.2f @<=%.2f loss stop $%g/h $%g/day",
              MIN_SIDE, DIR_K, BOOK_DELTA, DELTA, CLIP, MAX_SKEW, BUDGET, STOP_SEC, PULL_MOVE, PULL_WINDOW,
              TOPUP_MIN, TOPUP_MAX_ASK, LOSS_HOUR, LOSS_DAY)
@@ -232,10 +257,17 @@ def live():
                     r.place("Up", None, 0)
                     r.place("Down", None, 0)
                     continue
+                cl, bnow = chain.last_t("btc/usd"), bn.at(now)
+                if NOWCAST and cl and bnow and (bthen := bn.at(cl[0] + 1, max_age=5)):
+                    sp = cl[1] * bnow / bthen              # Chainlink lags Binance ~2.6 s: carry Binance's move forward
                 sig = spot.sigma(m.asset)
                 p_up = fair_up(sp, beat, sig * config.VOL_MULT, t_left, known)
                 led.tick(now, m, Snapshot(up, dn, t_left, m.fee, 0.0, p_up), sp, beat, known, sig)
+                led.binance(now, bnow)
                 moved = r.update_pulls(now, p_up)
+                if rising := r.fast_move(now, bn.move_bps(FAST_WINDOW, now)):
+                    log.info("[BTC 5m] FAST move: Binance %+.1f bp in %gs -> lean %s", bn.move_bps(FAST_WINDOW, now),
+                             FAST_WINDOW, rising)
                 target = target_skew(p_up, r.sh["Up"] + r.sh["Down"])
                 quoting = t_left > STOP_SEC and not halted
                 if quoting and (pt := pair_take(r, {"Up": up, "Down": dn}, m.fee)):
@@ -246,7 +278,8 @@ def live():
                              r.avg(other(side)) + ask + fee / n, r.sh["Up"], r.sh["Down"])
                 for side, book in (("Up", up), ("Down", dn)):
                     value = p_up if side == "Up" else 1 - p_up
-                    px = pair_quote(r, side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side]) if quoting else None
+                    px = pair_quote(r, side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side],
+                                    now < r.boost_until[side]) if quoting else None
                     r.place(side, px, ws.depth(m.up_token if side == "Up" else m.down_token, px) if px else 0)
                 if not halted and (t := topup(r, t_left, p_up, {"Up": up, "Down": dn})):
                     fav, ask, n = t
@@ -271,7 +304,7 @@ def live():
                         log.info("SETTLED %s -> %s", slug, w)
         except (requests.RequestException, ValueError, KeyError) as e:
             log.warning("api error: %r", e)
-        time.sleep(0.25)
+        time.sleep(LOOP_SEC)
 
 
 def replay(address, dbs):

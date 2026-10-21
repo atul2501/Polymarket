@@ -18,6 +18,9 @@ log = logging.getLogger("feeds")
 CTX = ssl.create_default_context(cafile=certifi.where())
 RTDS = "wss://ws-live-data.polymarket.com"
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+# Fastest public BTC feeds (live capture 21 Oct): Binance futures ~315 updates/s, moves with spot (<20 ms) and ~0.2 s
+# before Coinbase; Binance moves ~2.6 s before Chainlink and ~0.4 s before Polymarket's book.
+BINANCE_WS = ("wss://fstream.binance.com/ws/btcusdt@bookTicker", "wss://stream.binance.com:9443/ws/btcusdt@bookTicker")
 STALE_SEC = 10
 
 
@@ -76,6 +79,15 @@ class ChainlinkFeed:
             except Exception as e:  # ponytail: blind reconnect with 2s backoff; add jitter/alerts if it flaps
                 log.warning("chainlink socket: %r, reconnecting", e)
                 await asyncio.sleep(2)
+
+    def last_t(self, sym, max_age=5):
+        """(unix second, price) of the latest Chainlink point, or None if stale."""
+        with self.lock:
+            pts = self.points.get(sym) or {}
+            if not pts:
+                return None
+            t = max(pts)
+            return (t, pts[t]) if time.time() - t <= max_age else None
 
     def last(self, sym, max_age=5):
         with self.lock:
@@ -171,3 +183,56 @@ class BookFeed:
             bid = max(b["bids"]) if b["bids"] else None
             ask = min(b["asks"]) if b["asks"] else None
             return Book(bid, b["bids"].get(bid, 0.0), ask, b["asks"].get(ask, 0.0))
+
+
+class BinanceFeed:
+    """Binance BTC/USDT best bid/ask mid, futures first (most updates), spot as fallback; last ~15 s kept."""
+
+    def __init__(self):
+        self.pts = []          # (unix time, mid)
+        self.lock = threading.Lock()
+
+    def start(self):
+        _thread(self._run)
+        return self
+
+    async def _run(self):
+        i = 0
+        while True:
+            url = BINANCE_WS[i % len(BINANCE_WS)]
+            try:
+                async with websockets.connect(url, ssl=CTX, open_timeout=10, ping_interval=20) as ws:
+                    while True:
+                        d = json.loads(await asyncio.wait_for(ws.recv(), 10))  # silent 10 s -> reconnect
+                        mid = (float(d["b"]) + float(d["a"])) / 2
+                        now = time.time()
+                        with self.lock:
+                            self.pts.append((now, mid))
+                            if len(self.pts) > 6000:
+                                cut = now - 15
+                                self.pts = [x for x in self.pts if x[0] >= cut]
+            except Exception as e:  # ponytail: alternate futures/spot on any error; no backoff growth
+                log.warning("binance socket (%s): %r, reconnecting", url.split("/")[2], e)
+                i += 1
+                await asyncio.sleep(1)
+
+    def at(self, t, max_age=2):
+        """Mid at time t (latest point at or before t), or None."""
+        with self.lock:
+            pts = self.pts
+            lo, hi = 0, len(pts)
+            while lo < hi:
+                m = (lo + hi) // 2
+                if pts[m][0] <= t:
+                    lo = m + 1
+                else:
+                    hi = m
+            if lo == 0 or t - pts[lo - 1][0] > max_age:
+                return None
+            return pts[lo - 1][1]
+
+    def move_bps(self, window, now=None):
+        """Mid change over the last `window` seconds in basis points, or None."""
+        now = now or time.time()
+        a, b = self.at(now - window, max_age=window + 2), self.at(now)
+        return (b / a - 1) * 1e4 if a and b else None
