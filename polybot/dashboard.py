@@ -94,7 +94,7 @@ def wallet_round(slug):
                                                     params={"slug": slug, "closed": "true"}, timeout=10).json())
     if not m or isinstance(m, dict):
         return None
-    out = {"Up": [0.0, 0.0], "Down": [0.0, 0.0], "fills": 0, "last": None}
+    out = {"Up": [0.0, 0.0], "Down": [0.0, 0.0], "fills": 0, "last": None, "list": [], "taker_sh": 0.0}
     for off in range(0, 10000, 500):
         page = http.get("https://data-api.polymarket.com/trades", params={"user": WALLET, "market": m[0]["conditionId"],
                         "limit": 500, "offset": off, "takerOnly": "false"}, timeout=15).json()
@@ -103,8 +103,13 @@ def wallet_round(slug):
             out[x["outcome"]][1] += x["size"] * x["price"]
             out["fills"] += 1
             out["last"] = max(out["last"] or 0, x["timestamp"])
+            out["list"].append([x["timestamp"], x["outcome"], round(x["size"], 2), x["price"]])
         if len(page) < 500:
             break
+    taker = http.get("https://data-api.polymarket.com/trades", params={"user": WALLET, "market": m[0]["conditionId"],
+                     "limit": 500, "takerOnly": "true"}, timeout=15).json()
+    out["taker_sh"] = sum(x["size"] for x in taker)   # first 500 taker fills is plenty for a share
+    out["list"] = sorted(out["list"], reverse=True)[:30]
     return out
 
 
@@ -128,8 +133,8 @@ def wallet_history():
                 p = [float(x) for x in json.loads(m[0]["outcomePrices"])]
                 w = json.loads(m[0]["outcomes"])[p.index(max(p))]
                 f = wallet_round(slug)
-                settled[s] = {"start": s, "winner": w, "up": f["Up"], "down": f["Down"],
-                              "cost": f["Up"][1] + f["Down"][1],
+                settled[s] = {"start": s, "winner": w, "up": f["Up"], "down": f["Down"], "fills": f["fills"],
+                              "taker_sh": f["taker_sh"], "cost": f["Up"][1] + f["Down"][1], "list": f["list"][:15],
                               "pnl": (f[w][0] - f["Up"][1] - f["Down"][1]) if f["fills"] else 0.0}
             except Exception:                  # ponytail: retry the round on the next pass
                 break
@@ -146,8 +151,18 @@ def wallet_state():
         cost += r["cost"]
         series.append([r["start"] + 300, round(cum, 2), round(cost, 2)])
     live = cached(("wl", cur), 10, lambda: wallet_round(f"btc-updown-5m-{cur}"))
-    return {"live": live, "live_start": cur, "rounds": rounds[-8:][::-1], "series": series, "pnl": round(cum, 2),
-            "cost": round(cost, 2), "ret": cum / cost * 100 if cost else None, "n": len(rounds)}
+    active = [r for r in rounds if r["fills"]]
+    pairs = [r["up"][1] / r["up"][0] + r["down"][1] / r["down"][0] for r in active if r["up"][0] and r["down"][0]]
+    shares = sum(r["up"][0] + r["down"][0] for r in active)
+    recent = ([[*x, "live"] for x in live["list"]] if isinstance(live, dict) and live.get("list") else []) + \
+             [[*x, r["winner"]] for r in reversed(rounds[-2:]) for x in r["list"]]
+    return {"live": {k: v for k, v in live.items() if k != "list"} if isinstance(live, dict) else None,
+            "live_start": cur, "rounds": [{k: v for k, v in r.items() if k != "list"} for r in rounds[-8:][::-1]],
+            "series": series, "pnl": round(cum, 2), "cost": round(cost, 2), "ret": cum / cost * 100 if cost else None,
+            "n": len(rounds), "active": len(active), "won": sum(r["pnl"] > 0 for r in active),
+            "avg_pair": sum(pairs) / len(pairs) if pairs else None, "shares": shares,
+            "taker_pct": sum(r["taker_sh"] for r in active) / shares * 100 if shares else None,
+            "fills": sum(r["fills"] for r in active), "recent": sorted(recent, key=lambda x: -x[0])[:25]}
 
 
 def api_latency():

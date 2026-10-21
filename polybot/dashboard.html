@@ -143,6 +143,27 @@ summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .log { font: 12px/1.6 var(--mono); color: var(--ink-2); white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 .empty { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
 
+/* copied wallet section */
+.wgrid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 28px; }
+.wgrid > div + div { border-left: 1px solid var(--line); padding-left: 28px; }
+.wh { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font: 600 17px var(--mono); margin-top: 2px; }
+.stat .x { font-size: 11px; color: var(--faint); }
+.pos { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pos .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.pos .box .k { font-size: 12px; font-weight: 600; }
+.pos .box .v { font: 600 18px var(--mono); margin-top: 4px; }
+.pos .box .x { font: 12px var(--mono); color: var(--muted); }
+.scen { margin-top: 12px; font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+.scen b { font-family: var(--mono); }
+.wfeed { max-height: 236px; overflow-y: auto; margin-right: -8px; padding-right: 8px; }
+.wf { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12px; align-items: center; }
+.wf:last-child { border-bottom: 0; }
+.profile { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.6; }
+.profile b { color: var(--ink-2); font-weight: 600; }
+@media (max-width: 1100px) { .wgrid { grid-template-columns: 1fr; } .wgrid > div + div { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 18px; } }
 @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, 1fr); } .row2, .row3 { grid-template-columns: 1fr; } .top-in { grid-template-columns: 1fr auto; } .progress { display: none; } }
 @media (max-width: 560px) { .kpis { grid-template-columns: 1fr; } main, .top-in { padding-left: 16px; padding-right: 16px; } }
 </style>
@@ -189,6 +210,21 @@ summary { cursor: pointer; font-size: 12px; color: var(--muted); }
       <div class="head"><div><h3>Live round</h3><div class="sub" id="livesub">Open positions right now</div></div></div>
       <div class="scroll"><table><thead><tr><th>Holder</th><th>UP</th><th>DOWN</th><th>In</th></tr></thead><tbody id="live"></tbody></table></div>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="head"><div><h3><span style="color:var(--s1)">●</span> Copied wallet <span class="muted num" style="font-weight:500">0xc53375ff…d69a9</span></h3>
+      <div class="sub">The wallet we reverse-engineered, live from Polymarket's public trade data · all fills, maker and taker</div></div>
+      <span class="pill" id="wstate"></span></div>
+    <div class="wgrid">
+      <div><div class="wh">This test</div><div class="stats" id="wstats"></div></div>
+      <div><div class="wh">Current round <span class="num" id="wround" style="text-transform:none;letter-spacing:0"></span></div>
+        <div class="pos" id="wpos"></div><div class="split" id="wsplit"></div><div class="scen" id="wscen"></div></div>
+      <div><div class="wh">Latest fills</div><div class="wfeed" id="wfeed"></div></div>
+    </div>
+    <div class="profile"><b>Long-run profile</b> (our analysis of 1,661 sampled rounds, 21 Sep – 21 Oct): <b>+3.79%</b> return on money put in,
+      profitable every week (+2.4% to +4.6%), <b>58%</b> of rounds won, <b>83%</b> of shares bought at the ask, <b>never sells</b>, holds to settlement,
+      and buys the side Binance moved toward over the last ~3 seconds. That last rule is what the W-0.5 and W-3bp bots copy.</div>
   </section>
 
   <section class="card">
@@ -324,7 +360,44 @@ function render(d) {
   $("warnsum").textContent = `Show recent warnings (${warns.length}) · mostly brief reconnects of the order-book feed`;
   $("warns").textContent = warns.join("\n");
 
+  renderWallet(w, now);
   drawChart();
+}
+
+function renderWallet(w, now) {
+  const st = (k, v, x, c = "") => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div>${x ? `<div class="x">${x}</div>` : ""}</div>`;
+  $("wstats").innerHTML = w.n ? [
+    st("P/L", money(w.pnl), "", cls(w.pnl)), st("Return", pct(w.ret), "P/L ÷ money in", cls(w.ret)),
+    st("Rounds traded", `${w.active} / ${w.n}`, "rounds with at least one fill"),
+    st("Rounds won", w.active ? `${w.won} · ${(w.won / w.active * 100).toFixed(0)}%` : "—", "settled in profit"),
+    st("Avg pair cost", w.avg_pair == null ? "—" : "$" + w.avg_pair.toFixed(3), "UP avg + DOWN avg"),
+    st("Money in", "$" + Math.round(w.cost).toLocaleString(), `${Math.round(w.cost / Math.max(1, w.active)).toLocaleString()} per round`),
+    st("Shares bought", Math.round(w.shares).toLocaleString(), `${w.fills.toLocaleString()} fills`),
+    st("Bought at the ask", w.taker_pct == null ? "—" : w.taker_pct.toFixed(0) + "%", "rest from resting bids"),
+  ].join("") : `<div class="empty" style="grid-column:1/-1">Waiting for the first settled round of the test</div>`;
+
+  const l = w.live, start = w.live_start;
+  $("wround").textContent = start ? `${hm(start)}–${hm(start + 300)}` : "";
+  if (l) {
+    const u = l.Up, d = l.Down, cost = u[1] + d[1];
+    const box = (side, a, c) => `<div class="box"><div class="k ${c}">${side}</div><div class="v">${Math.round(a[0]).toLocaleString()}</div>
+      <div class="x">${a[0] ? "avg " + (a[1] / a[0]).toFixed(3) + " · $" + Math.round(a[1]).toLocaleString() : "no shares"}</div></div>`;
+    $("wpos").innerHTML = box("UP", u, "up") + box("DOWN", d, "down");
+    const tot = u[0] + d[0];
+    $("wsplit").innerHTML = tot ? `<span class="u" style="width:${u[0] / tot * 100}%"></span><span class="d" style="width:${d[0] / tot * 100}%"></span>` : "";
+    $("wscen").innerHTML = l.fills ? `<span>${l.fills} fills · $${Math.round(cost).toLocaleString()} in · last fill <b>${hms(l.last)}</b></span>
+      <span>If UP wins <b class="${cls(u[0] - cost)}">${money(u[0] - cost)}</b> · if DOWN wins <b class="${cls(d[0] - cost)}">${money(d[0] - cost)}</b></span>
+      ${u[0] && d[0] ? `<span>Pair cost so far <b>$${(u[1] / u[0] + d[1] / d[0]).toFixed(3)}</b></span>` : ""}`
+      : `<span>No fills published yet this round. Polymarket's trade feed can lag by a minute.</span>`;
+    const lastFill = Math.max(l.last || 0, ...(w.recent || []).map(x => x[0]));
+    const active = lastFill && now - lastFill < 600;
+    $("wstate").className = "pill " + (active ? "ok" : "");
+    $("wstate").innerHTML = `<span class="dot ${active ? "live" : ""}"></span>${active ? "trading" : lastFill ? "quiet since " + hm(lastFill) : "no recent fills"}`;
+  }
+  $("wfeed").innerHTML = (w.recent || []).map(([t, side, size, price, tag]) => {
+    const res = tag === "live" ? '<span class="tag open">live</span>' : tag === side ? '<span class="tag up">won</span>' : '<span class="tag down">lost</span>';
+    return `<div class="wf"><span class="num muted">${hms(t)}</span><span>Buy <b class="${side === "Up" ? "up" : "down"}">${side.toUpperCase()}</b>
+      <span class="num">${size} @ ${cents(price)}</span></span>${res}</div>`; }).join("") || `<div class="empty">No fills yet</div>`;
 }
 
 function spark(s, color) {
