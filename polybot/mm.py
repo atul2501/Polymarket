@@ -36,9 +36,11 @@ from spot import SpotFeed
 log = logging.getLogger("mm")
 _f = lambda k, d: float(os.getenv(k, d))
 DELTA = _f("MM_DELTA", 0.015)          # bid at most this far under the model's value of the side
-BOOK_DELTA = _f("MM_BOOK_DELTA", 0.02)  # ...and at least this far under the book mid (the wallet: 1.6-2.2c)
+BOOK_DELTA = _f("MM_BOOK_DELTA", 0.015)  # ...and at least this far under the book mid (the wallet: 1.4c)
 CLIP = _f("MM_CLIP", 10)               # shares per fill
-MAX_SKEW = _f("MM_MAX_SKEW", 40)       # hard cap on |UP - DOWN| shares
+MAX_SKEW = _f("MM_MAX_SKEW", 20)       # hard cap on |UP - DOWN| shares (v2 at 40 lost $94 in 5 reversal rounds)
+PAIR_TARGET = _f("MM_PAIR_TARGET", 0.97)  # complete a pair while UP avg + DOWN price (+ fee) <= this
+PAIR_MIN = _f("MM_PAIR_MIN", 5)           # once one side is this many shares ahead, only work on pairing it
 BUDGET = _f("MM_BUDGET", 50)           # $ per round
 STOP_SEC = _f("MM_STOP_SEC", 20)
 MIN_SIDE = _f("MM_MIN_SIDE", 0.40)     # real fills overnight: -$65.29 -> +$5.58 with this alone
@@ -72,6 +74,35 @@ def quote(side, bid, ask, value, skew, target, pulled):
     return px if px >= 0.01 else None
 
 
+def pair_quote(r, side, bid, ask, value, skew, target, pulled):
+    """Bid for `side` with pairing first: the wallet pairs a fill within ~3 s at ~$0.95; v2 waited ~30 s and
+    BTC moved in between (pairs up to $1.33). Light side: bid up to PAIR_TARGET - avg of the heavy side, ignoring the
+    direction filter (a pair at <= PAIR_TARGET is profit either way). Heavy side: no new bid."""
+    o = other(side)
+    if r.sh[o] - r.sh[side] >= PAIR_MIN:          # we're short this side: finish the pair
+        if bid is None:
+            return None
+        px = min(floor((PAIR_TARGET - r.avg(o)) * 100 + 1e-9) / 100, bid)
+        return px if px >= 0.01 else None
+    if r.sh[side] - r.sh[o] >= PAIR_MIN:          # we're long this side: wait for the other leg
+        return None
+    return quote(side, bid, ask, value, skew, target, pulled)
+
+
+def pair_take(r, books_by_side, fee):
+    """(side, ask, shares, fee) to buy as taker now, if it completes pairs at <= PAIR_TARGET."""
+    heavy = "Up" if r.skew() > 0 else "Down"
+    light, excess = other(heavy), abs(r.skew())
+    book = books_by_side[light]
+    if excess < 1 or book.ask is None:
+        return None
+    f = taker_fee(book.ask, 1, fee)
+    if r.avg(heavy) + book.ask + f > PAIR_TARGET:
+        return None
+    n = floor(min(excess, book.ask_size))
+    return (light, book.ask, n, f * n) if n >= 1 else None
+
+
 def hit_price(side, print_side, print_on, price):
     """Price at which a print trades against bids on `side`, or None if it can't touch them."""
     if print_on == side and print_side == "SELL":
@@ -96,6 +127,14 @@ class Round:
 
     def skew(self):
         return self.sh["Up"] - self.sh["Down"]
+
+    def avg(self, side):
+        return self.side_cost[side] / self.sh[side] if self.sh[side] else 0.0
+
+    def buy(self, side, px, n, fee=0.0):
+        self.sh[side] += n
+        self.side_cost[side] += px * n + fee
+        self.cost += px * n + fee
 
     def room(self, side, px):
         d = self.sh[side] - self.sh[other(side)]
@@ -199,9 +238,15 @@ def live():
                 moved = r.update_pulls(now, p_up)
                 target = target_skew(p_up, r.sh["Up"] + r.sh["Down"])
                 quoting = t_left > STOP_SEC and not halted
+                if quoting and (pt := pair_take(r, {"Up": up, "Down": dn}, m.fee)):
+                    side, ask, n, fee = pt
+                    led.record(m, "mm", Leg(side, ask, n, fee))
+                    r.buy(side, ask, n, fee)
+                    log.info("[BTC 5m] PAIR take %s @ %.2f x%g (pair %.3f incl fee) | inv UP %g DN %g", side, ask, n,
+                             r.avg(other(side)) + ask + fee / n, r.sh["Up"], r.sh["Down"])
                 for side, book in (("Up", up), ("Down", dn)):
                     value = p_up if side == "Up" else 1 - p_up
-                    px = quote(side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side]) if quoting else None
+                    px = pair_quote(r, side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side]) if quoting else None
                     r.place(side, px, ws.depth(m.up_token if side == "Up" else m.down_token, px) if px else 0)
                 if not halted and (t := topup(r, t_left, p_up, {"Up": up, "Down": dn})):
                     fav, ask, n = t
@@ -267,12 +312,14 @@ def replay(address, dbs):
                 continue
             r.update_pulls(t, pm)
             target = target_skew(pm, r.sh["Up"] + r.sh["Down"])
-            for side, b, a in (("Up", ub, ua), ("Down", dbid, da)):
-                v = pm if side == "Up" else 1 - pm
-                r.place(side, quote(side, b, a, v, r.skew(), target, t < r.pulled_until[side]) if t_left > STOP_SEC else None, 0)
             book = type("B", (), {})
             bu, bd = book(), book()
             bu.ask, bu.ask_size, bd.ask, bd.ask_size = ua, uas or 0, da, das or 0
+            if t_left > STOP_SEC and (pt := pair_take(r, {"Up": bu, "Down": bd}, config.DEFAULT_FEE)):
+                r.buy(pt[0], pt[1], pt[2], pt[3])
+            for side, b, a in (("Up", ub, ua), ("Down", dbid, da)):
+                v = pm if side == "Up" else 1 - pm
+                r.place(side, pair_quote(r, side, b, a, v, r.skew(), target, t < r.pulled_until[side]) if t_left > STOP_SEC else None, 0)
             if tp := topup(r, t_left, pm, {"Up": bu, "Down": bd}):
                 fav, ask, n = tp
                 c = ask * n + taker_fee(ask, n, config.DEFAULT_FEE)

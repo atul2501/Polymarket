@@ -133,6 +133,15 @@ def main():
     assert mm.topup(mm.Round(None), 90, 0.95, {"Up": ask(0.84, 50), "Down": ask(0.16, 50)}) == ("Up", 0.84, 10)
     assert mm.topup(mm.Round(None), 90, 0.95, {"Up": ask(0.90, 50), "Down": ask(0.10, 50)}) is None   # too expensive
     assert mm.topup(mm.Round(None), 150, 0.95, {"Up": ask(0.84, 50), "Down": ask(0.16, 50)}) is None  # too early
+    # mm pairing: finish a pair at <= PAIR_TARGET, never add to the side already ahead
+    rp = mm.Round(None)
+    rp.buy("Up", 0.55, 10)                                           # UP filled at 0.55, unpaired
+    assert mm.pair_quote(rp, "Up", 0.54, 0.56, 0.60, rp.skew(), 0, False) is None     # heavy side: no new bid
+    assert mm.pair_quote(rp, "Down", 0.44, 0.46, 0.20, rp.skew(), 0, False) == 0.42  # 0.97 - 0.55, even though model says 20%
+    bk = lambda a, n: type("B", (), {"ask": a, "ask_size": n})()
+    take = mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.41, 50)}, FEE)
+    assert take and take[0] == "Down" and take[2] == 10                              # 0.55 + 0.41 + fee <= 0.97
+    assert mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.44, 50)}, FEE) is None  # 0.99: too expensive
     print("ok")
 
 
