@@ -9,6 +9,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,7 @@ RUNS = Path(__file__).parent / "runs"
 BOTS = [b.split("=") for b in os.getenv("DASH_BOTS", "T-0.3=tk-d03.db,T-0.1=tk-d01.db,T-3bp=tk-3bp.db").split(",")]
 WALLET = "0xc53375ff94e96100f2b30a4b5775db35218d69a9"
 PORT = int(os.getenv("DASH_PORT", 8787))
+SINCE = os.getenv("DASH_SINCE", "18:30")   # wallet chart starts here today (local time)
 http = requests.Session()
 cache = {}
 
@@ -39,22 +41,23 @@ def bot_state(name, db_name):
     if not path.exists():
         return {"name": name, "missing": True}
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-    rows = con.execute("SELECT ts, side, price, shares, pnl, status, slug FROM trades WHERE status!='open' ORDER BY id").fetchall()
+    rows = con.execute("SELECT ts, side, price, shares, pnl, status, slug, cost FROM trades WHERE status!='open' ORDER BY id").fetchall()
     now = time.time()
     parse = lambda ts: time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
-    pts, cum, peak, dd, wins, losses = [], 0.0, 0.0, 0.0, [], []
+    pts, cum, ccost, peak, dd, wins, losses = [], 0.0, 0.0, 0.0, 0.0, [], []
     day = 0.0
-    for ts, side, price, sh, pnl, status, slug in rows:
+    for ts, side, price, sh, pnl, status, slug, cost in rows:
         cum += pnl
+        ccost += cost
         peak = max(peak, cum)
         dd = min(dd, cum - peak)
         t = parse(ts)
-        pts.append([t, round(cum, 2)])
+        pts.append([t, round(cum, 2), round(ccost, 2)])
         (wins if pnl > 0 else losses).append(pnl)
         if now - t < 86400:
             day += pnl
     hours = {}
-    for ts, _, _, _, pnl, _, _ in rows:
+    for ts, _, _, _, pnl, _, _, _ in rows:
         h = time.strftime("%H:00", time.localtime(parse(ts)))
         hours.setdefault(h, [0, 0.0])
         hours[h][0] += 1
@@ -101,28 +104,46 @@ def wallet_round(slug):
     return out
 
 
+settled = {}   # round start -> the wallet's settled round, filled by wallet_history() in the background
+
+
+def wallet_history():
+    """Keep every settled round since SINCE: the chart needs all of them and each costs a few API calls."""
+    since = int(time.mktime(time.strptime(time.strftime("%Y-%m-%d ") + SINCE, "%Y-%m-%d %H:%M")))
+    since -= since % 300
+    while True:
+        now = int(time.time())
+        for s in range(since, now - now % 300, 300):
+            if s in settled:
+                continue
+            try:
+                slug = f"btc-updown-5m-{s}"
+                m = http.get("https://gamma-api.polymarket.com/markets", params={"slug": slug, "closed": "true"},
+                             timeout=10).json()
+                if not m or m[0].get("umaResolutionStatus") != "resolved":
+                    break                      # later rounds aren't resolved either
+                p = [float(x) for x in json.loads(m[0]["outcomePrices"])]
+                w = json.loads(m[0]["outcomes"])[p.index(max(p))]
+                f = wallet_round(slug)
+                settled[s] = {"start": s, "winner": w, "up": f["Up"], "down": f["Down"],
+                              "cost": f["Up"][1] + f["Down"][1],
+                              "pnl": (f[w][0] - f["Up"][1] - f["Down"][1]) if f["fills"] else 0.0}
+            except Exception:                  # ponytail: retry the round on the next pass
+                break
+        time.sleep(20)
+
+
 def wallet_state():
     now = int(time.time())
     cur = now - now % 300
-    rounds = []
-    for s in range(cur - 300 * 6, cur, 300):
-        slug = f"btc-updown-5m-{s}"
-
-        def done(slug=slug):
-            m = http.get("https://gamma-api.polymarket.com/markets", params={"slug": slug, "closed": "true"}, timeout=10).json()
-            if not m or m[0].get("umaResolutionStatus") != "resolved":
-                return None
-            p = [float(x) for x in json.loads(m[0]["outcomePrices"])]
-            w = json.loads(m[0]["outcomes"])[p.index(max(p))]
-            f = wallet_round(slug)
-            return {"start": s, "winner": w, "up": f["Up"], "down": f["Down"],
-                    "pnl": (f[w][0] - f["Up"][1] - f["Down"][1]) if f["fills"] else 0.0}
-        r = cached(("wr", s), 30, done)
-        if r and r.get("winner"):
-            cache[("wr", s)] = (time.time() + 10 ** 9, r)   # settled: never refetch
-            rounds.append(r)
+    rounds = [settled[s] for s in sorted(settled)]
+    series, cum, ccost = [], 0.0, 0.0
+    for r in rounds:
+        cum += r["pnl"]
+        ccost += r["cost"]
+        series.append([r["start"] + 300, round(cum, 2), round(ccost, 2)])
     live = cached(("wl", cur), 10, lambda: wallet_round(f"btc-updown-5m-{cur}"))
-    return {"live": live, "live_start": cur, "rounds": rounds[::-1]}
+    return {"live": live, "live_start": cur, "rounds": rounds[-6:][::-1], "series": series}
 
 
 def api_latency():
@@ -163,5 +184,6 @@ class H(BaseHTTPRequestHandler):
 PAGE = (Path(__file__).parent / "dashboard.html").read_text()
 
 if __name__ == "__main__":
+    threading.Thread(target=wallet_history, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
