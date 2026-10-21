@@ -9,6 +9,10 @@ filter and no limit exit beat this plain version on both days.
 Paper realism: the entry waits DELAY_SEC after the signal (our order's trip to Polymarket) and takes the ask seen
 then, only if >= SIZE shares sit at it; the exit takes the bid seen at the exit time.
 
+TK_SETTLE=1: the copied wallet's way (it never sells; 21 Sep-21 Oct it bought on the side Binance moved toward over
+the last ~3 s and held to settlement, +2.1c/share as taker). Many entries per round, a cooldown per side, no exit.
+Replay at our speed (0.3 s): 0.5 bp trigger ~0c/share, 3 bp +3.2c over 502 trades (t=1.6, not yet significant).
+
 python taker.py        live paper run (ledger TK_LEDGER, default runs/taker.db); records ticks, Binance and prints
 """
 import logging
@@ -34,6 +38,7 @@ MIN_ASK, MAX_ASK = _f("TK_MIN_ASK", 0.05), _f("TK_MAX_ASK", 0.95)
 MIN_LEFT = _f("TK_MIN_LEFT", 30)         # no entries in the last 30 s
 COOLDOWN = _f("TK_COOLDOWN", 10)
 LOOP_SEC = _f("TK_LOOP", 0.05)
+SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown applies per side
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 
 
@@ -57,11 +62,13 @@ def live():
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
     bn = BinanceFeed().start()
-    pending, pos, last_entry = None, None, 0.0   # pending: (fire_at, market, side); pos: (id, market, side, exit_at)
+    pending, pos = None, None                     # pending: (fire_at, market, side); pos: (id, market, side, exit_at)
+    last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_settle, last_log = time.time(), 0.0, 0.0, 0.0
-    log.info("taker start | PAPER | %g bp in %gs -> buy %g @ ask after %.2fs, sell at bid after %gs | ask %.2f-%.2f "
-             "| no entry < %gs left | cooldown %gs | ledger %s", MOVE_BPS, MOVE_SEC, SIZE, DELAY_SEC, HOLD_SEC,
-             MIN_ASK, MAX_ASK, MIN_LEFT, COOLDOWN, LEDGER.name)
+    log.info("taker start | PAPER | %g bp in %gs -> buy %g @ ask after %.2fs, %s | ask %.2f-%.2f "
+             "| no entry < %gs left | cooldown %gs | ledger %s", MOVE_BPS, MOVE_SEC, SIZE, DELAY_SEC,
+             "hold to settlement" if SETTLE else f"sell at bid after {HOLD_SEC:g}s", MIN_ASK, MAX_ASK, MIN_LEFT,
+             COOLDOWN, LEDGER.name)
     while True:
         try:
             now = time.time()
@@ -93,11 +100,14 @@ def live():
                     if pos is None and (ask := entry_price(side_book[side], t_left)) is not None:
                         fee = taker_fee(ask, SIZE, m.fee)
                         pid = led.record(m, "taker", Leg(side, ask, SIZE, fee))
-                        pos, last_entry = (pid, m, side, now + HOLD_SEC), now
+                        last_entry[side] = now
+                        if not SETTLE:
+                            pos = (pid, m, side, now + HOLD_SEC)
                         log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, ask, SIZE, fee, t_left)
-                if pending is None and pos is None and now - last_entry >= COOLDOWN and t_left >= MIN_LEFT:
+                if pending is None and pos is None and t_left >= MIN_LEFT:
                     bps = bn.move_bps(MOVE_SEC, now)
-                    if side := signal(bps):
+                    side = signal(bps)
+                    if side and now - (last_entry[side] if SETTLE else max(last_entry.values())) >= COOLDOWN:
                         pending = (now + DELAY_SEC, m, side)
                         log.info("[BTC 5m] SIGNAL Binance %+.1f bp in %gs -> %s (UP %s/%s)", bps, MOVE_SEC, side,
                                  up.bid, up.ask)
@@ -107,7 +117,7 @@ def live():
                 log.info("taker status | %d trades closed | P/L %+.2f", n, pnl)
             if now - last_settle > 30:
                 last_settle = now
-                for slug in led.unsettled(now):   # only if a sale never happened (e.g. no bid at the exit)
+                for slug in led.unsettled(now):   # settle mode, or a sale that never happened (no bid at the exit)
                     if w := feed.outcome(slug):
                         led.settle(slug, w)
                         log.info("SETTLED %s -> %s", slug, w)
