@@ -22,7 +22,7 @@ ET = ZoneInfo("America/New_York")
 def fetch_trades(http, address, limit):
     out = []
     for off in range(0, limit, 500):
-        page = http.get(f"{DATA}/trades", params={"user": address, "limit": 500, "offset": off}, timeout=30).json()
+        page = http.get(f"{DATA}/trades", params={"user": address, "limit": 500, "offset": off, "takerOnly": "false"}, timeout=30).json()
         if not page:
             break
         out += page

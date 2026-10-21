@@ -20,6 +20,7 @@ class SpotFeed:
         self._open = {}   # (asset, start) -> (price to beat, source)
         self._stale = {}  # (asset, start) -> when Chainlink went quiet
         self._sig_hist = {}  # asset -> recent per-minute sigma values (last hour)
+        self._memo = {}      # key -> (time, value): Binance REST results reused for 1 s
 
     def _klines(self, asset, interval="1m", **params):
         return self.http.get(f"{config.BINANCE}/api/v3/klines", timeout=10,
@@ -29,6 +30,14 @@ class SpotFeed:
         closes = [float(k[4]) for k in self._klines(asset, "1s", startTime=int(start * 1000),
                                                      endTime=int(end * 1000) - 1, limit=60)]
         return sum(closes) / len(closes) if closes else None
+
+    def _cached(self, key, fn, ttl=1.0):
+        # the MM loop ticks every 0.1 s; one REST call per tick after a Chainlink switch hung two bots (21 Oct 10:25)
+        t, v = self._memo.get(key, (0.0, None))
+        if time.time() - t > ttl:
+            v = fn()
+            self._memo[key] = (time.time(), v)
+        return v
 
     def _binance_price(self, asset):
         return float(self.http.get(f"{config.BINANCE}/api/v3/ticker/price", timeout=10,
@@ -57,7 +66,8 @@ class SpotFeed:
             beat, src = self._avg_1s(asset, start - 60, start), "binance"
             self._open[(asset, start)] = (beat, src)
             logger.warning("[%s] chainlink quiet >%ds, window %d switched to binance", asset.upper(), GRACE_SEC, start)
-        return self._binance_price(asset), beat, self._avg_1s(asset, end - 60, now) if in_final else None, src
+        known = self._cached(("avg", asset, end), lambda: self._avg_1s(asset, end - 60, now)) if in_final else None
+        return self._cached(("px", asset), lambda: self._binance_price(asset)), beat, known, src
 
     def sigma(self, asset):
         """Per-second vol from the last 30 one-minute log returns, refreshed once a minute."""

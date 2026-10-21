@@ -38,11 +38,18 @@ _f = lambda k, d: float(os.getenv(k, d))
 DELTA = _f("MM_DELTA", 0.015)          # bid at most this far under the model's value of the side
 BOOK_DELTA = _f("MM_BOOK_DELTA", 0.015)  # ...and at least this far under the book mid (the wallet: 1.4c)
 CLIP = _f("MM_CLIP", 10)               # shares per fill
-MAX_SKEW = _f("MM_MAX_SKEW", 20)       # hard cap on |UP - DOWN| shares (v2 at 40 lost $94 in 5 reversal rounds)
+MAX_SKEW = _f("MM_MAX_SKEW", 10)       # hard cap on |UP - DOWN| shares (v2 at 40 lost $94 in 5 reversal rounds)
 PAIR_TARGET = _f("MM_PAIR_TARGET", 0.97)  # complete a pair while UP avg + DOWN price (+ fee) <= this
 PAIR_MIN = _f("MM_PAIR_MIN", 5)           # once one side is this many shares ahead, it is "heavy"
-AVG_STEP = _f("MM_AVG_STEP", 0.02)        # heavy side may only add at <= its average - this (average down, like the wallet)
+# 21 Oct, 32 rounds: pairs earned +$22..+$66, unpaired extra shares lost -$97..-$212 and sat on the losing side in
+# 43 of 44 rounds (bids fill on the side that is falling). So: pair at once as taker, never add to the heavy side.
+PAIR_TAKE_MAX = _f("MM_PAIR_TAKE_MAX", 1.02)  # taker-complete a pair up to this (2c/share beats ~45c lost unpaired)
+AVG_STEP = _f("MM_AVG_STEP", 9)           # heavy side may only add at <= its average - this; 9 = off (was 0.02-0.04)
+OPEN_MAX = _f("MM_OPEN_MAX", 0.60)        # never bid above this except to pair (bought DOWN @0.95 one-sided, UP won)
+BOOST = os.getenv("MM_BOOST", "0") != "0"  # fast-move bid-up to the mid; off: it opened one-sided at 0.71-0.95
 FAST_BPS, FAST_WINDOW, FAST_SEC = _f("MM_FAST_BPS", 2), _f("MM_FAST_WINDOW", 3), _f("MM_FAST_SEC", 3)
+FAST_AVG_SEC = _f("MM_FAST_AVG_SEC", 10)  # no averaging down this long after Binance moves against a side
+RESERVE = os.getenv("MM_RESERVE", "1") != "0"  # adding to the heavy side keeps budget to pair it (21 Oct 11:05PM: -$7.75)
 NOWCAST = os.getenv("MM_NOWCAST", "1") != "0"  # model spot = Chainlink + Binance move since the Chainlink point
 LOOP_SEC = _f("MM_LOOP_SEC", 0.1)         # Polymarket follows Binance within ~0.4 s
 BUDGET = _f("MM_BUDGET", 50)           # $ per round
@@ -79,12 +86,13 @@ def quote(side, bid, ask, value, skew, target, pulled, book_delta=None):
     return px if px >= 0.01 else None
 
 
-def pair_quote(r, side, bid, ask, value, skew, target, pulled, boosted=False):
+def pair_quote(r, side, bid, ask, value, skew, target, pulled, boosted=False, no_avg=False):
     """Bid for `side`, pairing first, like the copied wallet (round 10:10PM ET: it bought UP all the way down to an
     average of $0.24, which let DOWN at $0.67 still pair at $0.91).
     - light side: bid up to PAIR_TARGET - heavy side's average (that cap rises as the heavy side averages down),
       ignoring the direction filter, since a pair at <= PAIR_TARGET is profit either way
-    - heavy side: may keep buying, but only at <= its own average - AVG_STEP
+    - heavy side: may keep buying, but only at <= its own average - AVG_STEP, and not while `no_avg`
+      (Binance just moved against it)
     - otherwise: normal quote; `boosted` (Binance just moved toward this side) bids up to the book mid"""
     o = other(side)
     if r.sh[o] - r.sh[side] >= PAIR_MIN:
@@ -92,22 +100,26 @@ def pair_quote(r, side, bid, ask, value, skew, target, pulled, boosted=False):
             return None
         px = min(floor((PAIR_TARGET - r.avg(o)) * 100 + 1e-9) / 100, bid)
         return px if px >= 0.01 else None
-    px = quote(side, bid, ask, value, skew, target, pulled, 0.0 if boosted else None)
+    px = quote(side, bid, ask, value, skew, target, pulled, 0.0 if boosted and BOOST else None)
+    if px is not None:
+        px = min(px, OPEN_MAX)
     if px is not None and r.sh[side] - r.sh[o] >= PAIR_MIN:
+        if no_avg:
+            return None
         px = min(px, floor((r.avg(side) - AVG_STEP) * 100 + 1e-9) / 100)
         return px if px >= 0.01 else None
     return px
 
 
 def pair_take(r, books_by_side, fee):
-    """(side, ask, shares, fee) to buy as taker now, if it completes pairs at <= PAIR_TARGET."""
+    """(side, ask, shares, fee) to buy as taker now, if it completes pairs at <= PAIR_TAKE_MAX."""
     heavy = "Up" if r.skew() > 0 else "Down"
     light, excess = other(heavy), abs(r.skew())
     book = books_by_side[light]
-    if excess < 1 or book.ask is None:
+    if excess < PAIR_MIN or book.ask is None:
         return None
     f = taker_fee(book.ask, 1, fee)
-    if r.avg(heavy) + book.ask + f > PAIR_TARGET:
+    if r.avg(heavy) + book.ask + f > PAIR_TAKE_MAX:
         return None
     n = floor(min(excess, book.ask_size))
     return (light, book.ask, n, f * n) if n >= 1 else None
@@ -134,6 +146,7 @@ class Round:
         self.hist = []                               # (t, p_up) for the pull rule
         self.pulled_until = {"Up": 0.0, "Down": 0.0}
         self.boost_until = {"Up": 0.0, "Down": 0.0}
+        self.no_avg_until = {"Up": 0.0, "Down": 0.0}
         self.topped = False
 
     def fast_move(self, now, bps):
@@ -144,6 +157,7 @@ class Round:
         started = now >= self.boost_until[rising]
         self.pulled_until[other(rising)] = now + FAST_SEC
         self.boost_until[rising] = now + FAST_SEC
+        self.no_avg_until[other(rising)] = now + FAST_AVG_SEC
         return rising if started else None   # report only the start of a move
 
     def skew(self):
@@ -159,7 +173,11 @@ class Round:
 
     def room(self, side, px):
         d = self.sh[side] - self.sh[other(side)]
-        return max(0.0, min(CLIP, MAX_SKEW - d, (BUDGET - self.cost) / px))
+        left = BUDGET - self.cost
+        n = min(CLIP, MAX_SKEW - d, left / px)
+        if RESERVE and d >= 0:  # each extra share also needs ~(1 - px) later to pair it, as does the current excess
+            n = min(n, left - d * (1 - px))
+        return max(0.0, n)
 
     def place(self, side, px, ahead):
         """Rest a bid; keep our queue spot if the price didn't change."""
@@ -279,7 +297,7 @@ def live():
                 for side, book in (("Up", up), ("Down", dn)):
                     value = p_up if side == "Up" else 1 - p_up
                     px = pair_quote(r, side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side],
-                                    now < r.boost_until[side]) if quoting else None
+                                    now < r.boost_until[side], now < r.no_avg_until[side]) if quoting else None
                     r.place(side, px, ws.depth(m.up_token if side == "Up" else m.down_token, px) if px else 0)
                 if not halted and (t := topup(r, t_left, p_up, {"Up": up, "Down": dn})):
                     fav, ask, n = t

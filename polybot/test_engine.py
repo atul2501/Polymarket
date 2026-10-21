@@ -120,7 +120,7 @@ def main():
     r.place("Up", 0.45, 20)                         # 20 shares ahead of us at 0.45
     assert r.fill("Up", [("SELL", "Up", 0.45, 15)]) == 0 and r.resting["Up"][1] == 5   # queue eaten first
     assert r.fill("Up", [("SELL", "Up", 0.45, 12)]) == 7                              # 5 more ahead, then 7 to us
-    assert r.fill("Up", [("BUY", "Down", 0.60, 10)]) == 10    # a taker buying DOWN at 0.60 hits UP bids at 0.40: through us
+    assert r.fill("Up", [("BUY", "Down", 0.60, 10)]) == 3     # DOWN taker at 0.60 hits UP bids at 0.40; skew cap 10 - 7 held
     r.place("Up", 0.45, 99)
     assert r.resting["Up"][1] == 0                  # same price keeps our queue spot
     mm.PULL_MOVE = 0.10
@@ -136,13 +136,22 @@ def main():
     # mm pairing: finish a pair at <= PAIR_TARGET, never add to the side already ahead
     rp = mm.Round(None)
     rp.buy("Up", 0.55, 10)                                           # UP filled at 0.55, unpaired
-    assert mm.pair_quote(rp, "Up", 0.54, 0.56, 0.60, rp.skew(), 0, False) <= 0.55 - mm.AVG_STEP + 1e-9  # heavy: only averaging down
+    assert mm.pair_quote(rp, "Up", 0.54, 0.56, 0.60, rp.skew(), 0, False) is None        # heavy: no averaging down
     assert mm.pair_quote(rp, "Down", 0.44, 0.46, 0.20, rp.skew(), 0, False) == 0.42  # 0.97 - 0.55, even though model says 20%
     bk = lambda a, n: type("B", (), {"ask": a, "ask_size": n})()
     take = mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.41, 50)}, FEE)
-    assert take and take[0] == "Down" and take[2] == 10                              # 0.55 + 0.41 + fee <= 0.97
-    assert mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.44, 50)}, FEE) is None  # 0.99: too expensive
+    assert take and take[0] == "Down" and take[2] == 10                              # 0.55 + 0.41 + fee: pair now
+    assert mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.45, 50)}, FEE)          # ~1.02: still pair (unpaired loses ~45c)
+    assert mm.pair_take(rp, {"Up": bk(0.56, 50), "Down": bk(0.50, 50)}, FEE) is None  # 1.05+: too expensive
+    rq = mm.Round(None)
+    rq.buy("Up", 0.55, 4)
+    assert mm.pair_take(rq, {"Up": bk(0.56, 50), "Down": bk(0.41, 50)}, FEE) is None  # under PAIR_MIN ahead: wait
+    rb = mm.Round(None)
+    assert mm.pair_quote(rb, "Up", 0.80, 0.81, 0.85, 0, 0, False) == mm.OPEN_MAX           # no one-sided bid above 0.60
+    assert mm.pair_quote(rb, "Up", 0.50, 0.52, 0.80, 0, 0, False, boosted=True) == \
+        mm.pair_quote(rb, "Up", 0.50, 0.52, 0.80, 0, 0, False)                             # boost off by default
     # mm v4: average down on the heavy side, pair cap rises as the heavy average falls, fast-move pull/boost
+    mm.AVG_STEP = 0.02                                                                      # v4 averaging, off by default
     r4 = mm.Round(None)
     r4.buy("Up", 0.39, 10)
     assert mm.pair_quote(r4, "Up", 0.38, 0.39, 0.60, r4.skew(), 0, False) <= 0.37          # heavy at avg 0.39: bid <= 0.37
@@ -153,8 +162,21 @@ def main():
     assert r4.fast_move(100, 3.0) == "Up" and r4.pulled_until["Down"] > 100 and r4.boost_until["Up"] > 100
     assert r4.fast_move(100.5, 3.0) is None                                                 # same move: logged once
     assert r4.fast_move(101, 1.0) is None                                                   # small move ignored
+    assert r4.no_avg_until["Down"] > 109                                                    # Binance up: no DOWN averaging 10 s
+    assert mm.pair_quote(r4, "Up", 0.20, 0.21, 0.60, r4.skew(), 0, False, no_avg=True) is None  # heavy, blocked
+    mm.AVG_STEP = 9
+    r5 = mm.Round(None)
+    r5.buy("Up", 0.65, 40); r5.buy("Down", 0.27, 40); r5.buy("Up", 0.71, 2)  # 11:05PM: $39.85 spent, UP +2
+    assert r5.room("Up", 0.53) <= 50 - r5.cost - 2 * 0.47 + 1e-9                             # keeps money to pair
+    assert r5.room("Down", 0.47) == 10                                                     # light side unaffected
     boosted = mm.quote("Up", 0.50, 0.52, 0.80, 0, 0, False, 0.0)
     assert boosted == 0.50                                                                  # boost bids at the best bid
+    # spot: Binance REST fallback reused for 1 s, not called every 0.1 s tick
+    import spot
+    sf, calls = spot.SpotFeed.__new__(spot.SpotFeed), []
+    sf._memo = {}
+    assert sf._cached("k", lambda: calls.append(1) or len(calls)) == 1 == sf._cached("k", lambda: 99) and len(calls) == 1
+
     print("ok")
 
 
