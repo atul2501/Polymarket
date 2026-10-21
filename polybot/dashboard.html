@@ -9,10 +9,14 @@
   --bg: #f6f7f5; --card: #ffffff; --ink: #14181b; --ink2: #4d555b; --muted: #8a9094; --line: #e2e5e1;
   --up: #0a7a2f; --down: #c0362c; --warn: #9a6200; --accent: #2a6fd6;
   --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  --grid: #e1e0d9; --axis: #c3c2b7; --tip: #ffffff;
 }
 @media (prefers-color-scheme: dark) { :root {
   --bg: #0c0e0f; --card: #15181a; --ink: #eceeed; --ink2: #b9bfbc; --muted: #7f8683; --line: #262a2c;
-  --up: #3ccf6b; --down: #f06a5f; --warn: #e5a93b; --accent: #4b8cf0; } }
+  --up: #3ccf6b; --down: #f06a5f; --warn: #e5a93b; --accent: #4b8cf0;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+  --grid: #2c2c2a; --axis: #383835; --tip: #202224; } }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); }
 .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 16px 48px; display: grid; gap: 16px; }
@@ -32,7 +36,18 @@ th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font: 500 11px var(--mono); text-transform: uppercase; }
 th:first-child, td:first-child { text-align: left; }
 .scroll { overflow-x: auto; }
-svg { width: 100%; height: 180px; display: block; }
+#chartbox { position: relative; }
+#chart { width: 100%; height: 280px; display: block; touch-action: none; }
+#chart text { font: 11px var(--mono); fill: var(--muted); }
+.tip { position: absolute; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.18); display: none; min-width: 190px; z-index: 2; }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; }
+.tip .row b { font: 600 12px var(--mono); }
+.key { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--ink2); user-select: none; }
+.chip b { font: 600 12px var(--mono); color: var(--ink); }
+.chip.off { opacity: .35; }
 button { font: 600 14px var(--sans); border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
 .tog { font: 500 12px var(--sans); padding: 4px 10px; background: var(--line); color: var(--ink2); }
 .tog.on { background: var(--accent); color: #fff; }
@@ -58,8 +73,10 @@ button { font: 600 14px var(--sans); border: 0; border-radius: 8px; padding: 10p
   <section class="card">
     <h2>Performance <span class="muted">cumulative, all bots and the copied wallet</span>
       <span style="float:right"><button class="tog" data-m="pct">Return %</button> <button class="tog" data-m="usd">$ P/L</button></span></h2>
-    <div id="legend" class="muted"></div>
-    <svg id="chart" viewBox="0 0 1000 180" preserveAspectRatio="none" role="img" aria-label="Cumulative P/L chart"></svg>
+    <div id="legend" class="legend"></div>
+    <div id="chartbox"><svg id="chart" role="img" aria-label="Cumulative return of each bot and the copied wallet over time"></svg>
+      <div class="tip" id="tip"></div></div>
+    <div class="muted" id="chartnote" style="margin:4px 0 10px"></div>
     <div class="scroll"><table id="perf"></table></div>
   </section>
 
@@ -83,8 +100,9 @@ button { font: 600 14px var(--sans); border: 0; border-radius: 8px; padding: 10p
 </div>
 <script>
 const $ = id => document.getElementById(id);
-const COLORS = ["#2a6fd6", "#e0702b", "#1ea672", "#c2409a", "#8a63d2"];
-let MODE = "pct", LAST = null;
+// fixed slot order (validated palette): slot 1 = copied wallet, then bots in DASH_BOTS order; colour follows the series
+const SLOTS = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
+let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set();
 const money = v => v == null ? "—" : (v >= 0 ? "+$" : "−$") + Math.abs(v).toFixed(2);
 const cls = v => v > 0 ? "up" : v < 0 ? "down" : "";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
@@ -110,25 +128,10 @@ function render(d) {
   ].map(([k, v]) => `<div><span class="muted">${k}</span><b>${v}</b></div>`).join("") +
     (warns.length ? `<div style="grid-column:1/-1" class="log">${warns.slice(-4).map(esc).join("\n")}</div>` : "");
 
-  // chart: bots + copied wallet; Return % = cumulative P/L / cumulative money put in (fair across sizes)
-  const lines = bots.map((b, i) => ({name: b.name, color: COLORS[i % COLORS.length], s: b.series, w: 2}));
-  if (d.wallet && d.wallet.series && d.wallet.series.length) lines.push({name: "Copied wallet", color: "var(--ink)", s: d.wallet.series, w: 3});
-  const val = p => MODE === "usd" ? p[1] : (p[2] > 0 ? p[1] / p[2] * 100 : 0);
-  // Return %: hide each line's first stretch (under 5% of its money) where a few trades swing the ratio wildly
-  if (MODE === "pct") lines.forEach(l => { const fin = l.s.length ? l.s[l.s.length - 1][2] : 0; l.s = l.s.filter(p => p[2] >= 0.05 * fin); });
-  const all = lines.flatMap(l => l.s);
-  if (all.length) {
-    const t0 = Math.min(...all.map(p => p[0])), t1 = Math.max(...all.map(p => p[0]));
-    const vs = all.map(val), lo = Math.min(0, ...vs), hi = Math.max(0, ...vs);
-    const X = t => (t - t0) / Math.max(1, t1 - t0) * 1000, Y = v => 170 - (v - lo) / Math.max(0.01, hi - lo) * 160;
-    $("chart").innerHTML = `<line x1="0" x2="1000" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--muted)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="4 4"/>` +
-      lines.map(l => `<polyline fill="none" stroke="${l.color}" stroke-width="${l.w}" vector-effect="non-scaling-stroke"
-        points="${l.s.map(p => X(p[0]).toFixed(1) + "," + Y(val(p)).toFixed(1)).join(" ")}"/>`).join("");
-    const fmtv = v => MODE === "usd" ? money(v) : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + "%";
-    $("legend").innerHTML = lines.map(l => { const last = l.s.length ? val(l.s[l.s.length - 1]) : 0;
-      return `<span style="color:${l.color}">■</span> ${esc(l.name)} <b class="${cls(last)}">${fmtv(last)}</b>`; }).join(" &nbsp; ") +
-      ` &nbsp; <span class="muted">${new Date(t0 * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})} → now · range ${fmtv(lo)} to ${fmtv(hi)}</span>`;
-  }
+  LINES = [];
+  if (d.wallet && d.wallet.series && d.wallet.series.length) LINES.push({name: "Copied wallet", color: SLOTS[0], s: d.wallet.series, w: 3});
+  bots.forEach((b, i) => LINES.push({name: b.name, color: SLOTS[(i + 1) % SLOTS.length], s: b.series, w: 2}));
+  drawChart();
   $("perf").innerHTML = `<tr><th>Bot</th><th>P/L</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Max drawdown</th></tr>` +
     bots.map(b => `<tr><td>${esc(b.name)}</td><td class="${cls(b.pnl)}">${money(b.pnl)}</td><td>${b.trades}</td>
       <td>${b.win_rate == null ? "—" : (b.win_rate * 100).toFixed(1) + "%"}</td><td class="up">${money(b.avg_win)}</td>
@@ -173,11 +176,69 @@ function render(d) {
     <div class="log" style="margin-top:8px">${esc(b.last_line)}</div></div>`).join("");
 }
 
+// ---- chart: cumulative Return % (P/L / money put in) or $ P/L, one point per settled round
+const fmtv = v => v == null ? "—" : MODE === "usd" ? money(v) : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + "%";
+const val = p => MODE === "usd" ? p[1] : (p[2] > 0 ? p[1] / p[2] * 100 : 0);
+const hm = t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+function niceTicks(lo, hi, n) {
+  const span = Math.max(hi - lo, 1e-9), raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+function shown(l) {
+  // Return %: skip each line's first 2 rounds and its first 5% of money, where one or two trades swing the ratio
+  // wildly (a lone lost $8 buy reads -100%); the legend still shows the current value
+  if (MODE !== "pct" || !l.s.length) return l.s;
+  const fin = l.s[l.s.length - 1][2];
+  return l.s.filter((p, i) => i >= 2 && p[2] >= 0.05 * fin);
+}
+function valueAt(pts, t) { let v = null; for (const p of pts) { if (p[0] <= t) v = val(p); else break; } return v; }
+function drawChart() {
+  const svg = $("chart"), W = svg.clientWidth || 900, H = 280, m = {l: 64, r: 16, t: 10, b: 26};
+  const vis = LINES.filter(l => !HIDDEN.has(l.name)).map(l => ({...l, p: shown(l)})).filter(l => l.p.length);
+  $("legend").innerHTML = LINES.map(l => { const last = l.s.length ? val(l.s[l.s.length - 1]) : null;
+    return `<span class="chip ${HIDDEN.has(l.name) ? "off" : ""}" data-n="${esc(l.name)}"><span class="key" style="border-color:${l.color};border-top-width:${l.w}px"></span>${esc(l.name)} <b>${fmtv(last)}</b></span>`; }).join("");
+  document.querySelectorAll(".chip").forEach(c => c.onclick = () => { const n = c.dataset.n; HIDDEN.has(n) ? HIDDEN.delete(n) : HIDDEN.add(n); drawChart(); });
+  if (!vis.length) { svg.innerHTML = ""; return; }
+  const all = vis.flatMap(l => l.p), t0 = Math.min(...all.map(p => p[0])), t1 = Math.max(...all.map(p => p[0]), t0 + 600);
+  const vs = all.map(val), lo0 = Math.min(0, ...vs), hi0 = Math.max(0, ...vs), pad = (hi0 - lo0) * 0.08 || 1;
+  const yt = niceTicks(lo0 - pad, hi0 + pad, 5), lo = Math.min(yt[0], lo0), hi = Math.max(yt[yt.length - 1], hi0);
+  const X = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r), Y = v => m.t + (hi - v) / (hi - lo) * (H - m.t - m.b);
+  const span = t1 - t0, step = [900, 1800, 3600, 7200, 14400].find(s => span / s <= 8) || 28800;
+  const xt = []; for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) xt.push(t);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML =
+    yt.map(v => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}" stroke-width="1"/>
+      <text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${MODE === "usd" ? (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString() : v + "%"}</text>`).join("") +
+    xt.map(t => `<text x="${X(t)}" y="${H - 6}" text-anchor="middle">${hm(t)}</text>`).join("") +
+    vis.map(l => `<polyline fill="none" stroke="${l.color}" stroke-width="${l.w}" stroke-linejoin="round" stroke-linecap="round"
+      points="${l.p.map(p => X(p[0]).toFixed(1) + "," + Y(val(p)).toFixed(1)).join(" ")}"/>`).join("") +
+    vis.map(l => { const q = l.p[l.p.length - 1]; return `<circle cx="${X(q[0])}" cy="${Y(val(q))}" r="4" fill="${l.color}" stroke="var(--card)" stroke-width="2"/>`; }).join("") +
+    `<line id="xh" y1="${m.t}" y2="${H - m.b}" stroke="var(--muted)" stroke-width="1" style="display:none"/>
+     <rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hit"/>`;
+  $("chartnote").textContent = `${hm(t0)} → ${hm(t1)} · ${MODE === "pct" ? "cumulative P/L ÷ money put in, so a $30k wallet and a $10 bot are comparable" : "cumulative dollars"} · one point per settled 5-minute round · click a name to hide it`;
+  const times = [...new Set(all.map(p => p[0]))].sort((a, b) => a - b);
+  const hit = $("hit"), tip = $("tip"), xh = $("xh");
+  hit.onpointermove = e => {
+    const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) * W / r.width;
+    const t = times.reduce((a, b) => Math.abs(X(b) - x) < Math.abs(X(a) - x) ? b : a);
+    xh.setAttribute("x1", X(t)); xh.setAttribute("x2", X(t)); xh.style.display = "";
+    const rows = vis.map(l => ({l, v: valueAt(l.p, t)})).filter(o => o.v != null).sort((a, b) => b.v - a.v);
+    tip.innerHTML = `<div class="muted">round ending ${hm(t)}</div>` + rows.map(o => `<div class="row"><span><span class="key" style="border-color:${o.l.color}"></span>${esc(o.l.name)}</span><b>${fmtv(o.v)}</b></div>`).join("");
+    tip.style.display = "block";
+    const left = X(t) * r.width / W;
+    tip.style.left = Math.min(Math.max(0, left + 12), r.width - tip.offsetWidth) + "px"; tip.style.top = "8px";
+  };
+  hit.onpointerleave = () => { tip.style.display = "none"; xh.style.display = "none"; };
+}
+window.addEventListener("resize", () => drawChart());
+
 async function tick() {
   try { LAST = await (await fetch("/api/state")).json(); render(LAST); } catch (e) { $("clock").textContent = "connection lost"; }
 }
 document.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => { MODE = b.dataset.m;
-  document.querySelectorAll(".tog").forEach(x => x.classList.toggle("on", x === b)); if (LAST) render(LAST); }));
+  document.querySelectorAll(".tog").forEach(x => x.classList.toggle("on", x === b)); drawChart(); }));
 document.querySelector('.tog[data-m="pct"]').classList.add("on");
 tick(); setInterval(tick, 2000);
 

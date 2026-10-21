@@ -44,15 +44,13 @@ def bot_state(name, db_name):
     rows = con.execute("SELECT ts, side, price, shares, pnl, status, slug, cost FROM trades WHERE status!='open' ORDER BY id").fetchall()
     now = time.time()
     parse = lambda ts: time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
-    pts, cum, ccost, peak, dd, wins, losses = [], 0.0, 0.0, 0.0, 0.0, [], []
+    cum, peak, dd, wins, losses = 0.0, 0.0, 0.0, [], []
     day = 0.0
     for ts, side, price, sh, pnl, status, slug, cost in rows:
         cum += pnl
-        ccost += cost
         peak = max(peak, cum)
         dd = min(dd, cum - peak)
         t = parse(ts)
-        pts.append([t, round(cum, 2), round(ccost, 2)])
         (wins if pnl > 0 else losses).append(pnl)
         if now - t < 86400:
             day += pnl
@@ -62,6 +60,12 @@ def bot_state(name, db_name):
         hours.setdefault(h, [0, 0.0])
         hours[h][0] += 1
         hours[h][1] += pnl
+    rseries, a_, c_ = [], 0.0, 0.0            # one point per settled round, like the wallet's line
+    for e, pp, cc in con.execute("SELECT window_end, sum(pnl), sum(cost) FROM trades WHERE status!='open' "
+                                 "GROUP BY window_end ORDER BY window_end"):
+        a_ += pp
+        c_ += cc
+        rseries.append([e, round(a_, 2), round(c_, 2)])
     by_round = dict(con.execute("SELECT window_end, round(sum(pnl), 2) FROM trades WHERE status!='open' "
                                 "GROUP BY window_end ORDER BY window_end DESC LIMIT 12").fetchall())
     open_pos = con.execute("SELECT side, price, shares, cost FROM trades WHERE status='open'").fetchall()
@@ -75,7 +79,7 @@ def bot_state(name, db_name):
         "name": name, "running": tick is not None and now - tick[0] < 10, "log_age": age, "trades": n, "pnl": round(cum, 2),
         "pnl_24h": round(day, 2), "win_rate": len(wins) / n if n else None,
         "avg_win": sum(wins) / len(wins) if wins else None, "avg_loss": sum(losses) / len(losses) if losses else None,
-        "max_dd": round(dd, 2), "series": pts[-2000:], "hours": hours, "by_round": by_round,
+        "max_dd": round(dd, 2), "series": rseries, "hours": hours, "by_round": by_round,
         "recent": [{"t": time.strftime("%H:%M:%S", time.localtime(parse(r[0]))), "side": r[1], "price": r[2],
                     "shares": r[3], "pnl": r[4]} for r in rows[-12:]][::-1],
         "open": [{"side": s, "price": p, "shares": sh, "cost": c} for s, p, sh, c in open_pos],
@@ -170,7 +174,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/state"):
             return self.send(200, json.dumps(state()).encode(), "application/json")
-        self.send(200, PAGE.encode(), "text/html; charset=utf-8")
+        self.send(200, PAGE_FILE.read_bytes(), "text/html; charset=utf-8")   # re-read: edits show on reload
 
     def do_POST(self):
         if self.path == "/api/stop":
@@ -181,7 +185,7 @@ class H(BaseHTTPRequestHandler):
         self.send(404, b"", "text/plain")
 
 
-PAGE = (Path(__file__).parent / "dashboard.html").read_text()
+PAGE_FILE = Path(__file__).parent / "dashboard.html"
 
 if __name__ == "__main__":
     threading.Thread(target=wallet_history, daemon=True).start()
