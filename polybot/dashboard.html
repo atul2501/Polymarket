@@ -46,26 +46,27 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-i
 /* ---------- header */
 .top { position: sticky; top: 0; z-index: var(--z-head); background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: saturate(140%) blur(14px); border-bottom: 1px solid var(--hair); }
 .top-in { max-width: 1360px; margin: 0 auto; padding: 0 28px; height: 64px; display: flex; align-items: center; gap: 24px; }
-.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; flex: none; }
 .brand svg { width: 30px; height: 30px; flex: none; }
 .brand b { display: block; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
-.brand span { font-size: 12px; color: var(--muted); }
-nav.sec { display: flex; gap: 2px; }
-nav.sec a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 10px; border-radius: 8px; transition: color .2s, background .2s; }
+.brand span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.brand div { white-space: nowrap; }
+nav.sec { display: flex; gap: 2px; flex: none; }
+nav.sec a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 9px; white-space: nowrap; border-radius: 8px; transition: color .2s, background .2s; }
 nav.sec a:hover, nav.sec a.on { color: var(--ink); background: var(--s2); }
 .grow { flex: 1; }
-.run { min-width: 220px; }
-.run .l { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+.run { min-width: 236px; flex: 0 1 280px; }
+.run .l { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .run .l b { color: var(--ink-2); font-weight: 600; }
 .track { height: 4px; margin-top: 6px; background: var(--s2); border-radius: 99px; overflow: hidden; }
 .track i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transform: scaleX(0); transform-origin: left; transition: transform .6s ease; }
-.badge { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border-radius: 8px; font-size: 12px; font-weight: 600; background: var(--s2); color: var(--ink-2); white-space: nowrap; }
+.badge { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border-radius: 8px; font-size: 12px; font-weight: 600; background: var(--s2); color: var(--ink-2); white-space: nowrap; }
 .badge.ok { background: var(--up-bg); color: var(--up); } .badge.bad { background: var(--down-bg); color: var(--down); } .badge.paper { background: var(--warn-bg); color: var(--warn); letter-spacing: .06em; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; flex: none; }
 .live-dot.on::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid currentColor; opacity: 0; animation: ping 1.8s ease-out infinite; }
 @keyframes ping { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.6); opacity: 0; } }
 .stop { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--down) 45%, transparent); background: transparent; color: var(--down);
-  font: 600 12px var(--sans); cursor: pointer; position: relative; overflow: hidden; user-select: none; transition: background .2s, transform .1s; }
+  font: 600 12px var(--sans); cursor: pointer; position: relative; overflow: hidden; user-select: none; transition: background .2s, transform .1s; white-space: nowrap; flex: none; }
 .stop:hover { background: var(--down-bg); } .stop:active { transform: translateY(1px); }
 .stop i { position: absolute; inset: 0; transform: scaleX(0); transform-origin: left; background: var(--down-bg); }
 .stop span { position: relative; }
@@ -99,6 +100,21 @@ main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; paddin
 .tape .r.new { animation: in .8s ease; }
 .tape .r span:last-child { text-align: right; color: var(--ink-2); }
 @keyframes in { from { background: var(--accent-bg); } to { background: transparent; } }
+
+/* ---------- latency */
+.lat { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.35fr); gap: 16px; }
+.lt .k { font-size: 12px; color: var(--muted); }
+.lt .v { font: 600 26px/1.15 var(--mono); letter-spacing: -0.03em; margin-top: 10px; }
+.lt .v small { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 2px; }
+.lt .x { font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
+.lt.hero { background: linear-gradient(180deg, var(--accent-bg), transparent 70%), var(--s1); }
+.gauge { position: relative; height: 6px; border-radius: 99px; margin-top: 14px;
+  background: linear-gradient(90deg, var(--up) 0 14%, var(--warn) 14% 43%, var(--down) 43% 100%); opacity: .85; }
+.gauge i { position: absolute; top: -4px; width: 3px; height: 14px; border-radius: 2px; background: var(--ink); transform: translateX(-50%); transition: left .6s; }
+.gauge-l { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--faint); margin-top: 6px; }
+#latchart { width: 100%; height: 200px; display: block; }
+#latchart text { font: 11px var(--mono); fill: var(--muted); }
+@media (max-width: 1240px) { .lat { grid-template-columns: repeat(2, minmax(0, 1fr)); } .lt.hero { grid-column: 1 / -1; } }
 
 /* ---------- pipeline */
 .pipe { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
@@ -207,7 +223,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
 @keyframes sk { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .offline { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--down); color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; display: none; z-index: 40; }
 
-@media (max-width: 1240px) { .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } nav.sec { display: none; } }
+@media (max-width: 1440px) { .brand span { display: none; } .run { min-width: 190px; } }
+@media (max-width: 1340px) { nav.sec { display: none; } }
+@media (max-width: 1240px) { .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1000px) { .g31, .g11, .wgrid { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wgrid > div + div { border-left: 0; padding-left: 0; border-top: 1px solid var(--hair); padding-top: 20px; }
   .pipe { grid-template-columns: 1fr; } .stage { border-radius: 0 !important; } .stage:first-child { border-radius: 14px 14px 0 0 !important; } .stage:last-child { border-radius: 0 0 14px 14px !important; }
@@ -225,7 +243,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
       <div><b>Polybot</b><span>BTC up or down · 5 min</span></div>
     </a>
     <nav class="sec" aria-label="Sections">
-      <a href="#data">Data in</a><a href="#pipeline">Pipeline</a><a href="#performance">Performance</a><a href="#wallet">Wallet</a><a href="#bots">Bots</a><a href="#integrity">Integrity</a>
+      <a href="#data">Data in</a><a href="#latency">Latency</a><a href="#pipeline">Pipeline</a><a href="#performance">Performance</a><a href="#wallet">Wallet</a><a href="#bots">Bots</a><a href="#integrity">Integrity</a>
     </nav>
     <div class="grow"></div>
     <div class="run"><div class="l"><span id="tlabel">Paper test</span><b id="tleft"></b></div><div class="track"><i id="tbar"></i></div></div>
@@ -251,8 +269,18 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
     </div>
   </section>
 
+  <section class="section" id="latency">
+    <div class="sh"><span class="n">02</span><h2>Latency</h2><p>How old the data is when it reaches this Mac, and how long an order would take to reach Polymarket</p></div>
+    <div class="lat" id="lat"></div>
+    <article class="panel" style="margin-top:16px">
+      <div class="ph"><div><h3>Round trips over the last hour</h3><div class="cap">Measured every 5 seconds from this Mac, in milliseconds</div></div><div class="chips" id="latlegend"></div></div>
+      <svg id="latchart" role="img" aria-label="Round-trip latency over the last hour"></svg>
+      <div class="note">Total reaction = Binance data age + one order round trip to Polymarket. Our edge fades with every 0.1 s: replays gave about +5¢ a share at 0.1 s, +3¢ at 0.3 s and nothing at 0.7 s.</div>
+    </article>
+  </section>
+
   <section class="section" id="pipeline">
-    <div class="sh"><span class="n">02</span><h2>Pipeline</h2><p>How data turns into results since the test started, across every bot</p></div>
+    <div class="sh"><span class="n">03</span><h2>Pipeline</h2><p>How data turns into results since the test started, across every bot</p></div>
     <div class="pipe" id="pipe"></div>
     <div class="panel" style="margin-top:16px"><div class="scroll"><table>
       <thead><tr><th>Bot</th><th>Signals</th><th>Paper buys</th><th>Taken</th><th>Open</th><th>Settled</th><th>Won</th><th>P/L</th></tr></thead>
@@ -260,7 +288,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="performance">
-    <div class="sh"><span class="n">03</span><h2>Performance</h2><p>Settled results since the test started</p></div>
+    <div class="sh"><span class="n">04</span><h2>Performance</h2><p>Settled results since the test started</p></div>
     <div class="kpis">
       <article class="panel kpi"><div class="k">Leading bot <span id="k1n"></span></div><div class="v num" id="k1v"><span class="sk" style="width:55%;height:28px"></span></div><div class="s" id="k1s"></div></article>
       <article class="panel kpi"><div class="k">Copied wallet <span class="num muted">0xc533…69a9</span></div><div class="v num" id="k2v"><span class="sk" style="width:55%;height:28px"></span></div><div class="s" id="k2s"></div></article>
@@ -283,7 +311,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="wallet">
-    <div class="sh"><span class="n">04</span><h2>Copied wallet</h2><p>0xc53375ff…d69a9, live from Polymarket's public trade data, all fills</p><span class="aside badge" id="wstate"></span></div>
+    <div class="sh"><span class="n">05</span><h2>Copied wallet</h2><p>0xc53375ff…d69a9, live from Polymarket's public trade data, all fills</p><span class="aside badge" id="wstate"></span></div>
     <article class="panel">
       <div class="wgrid">
         <div><div class="wh">This test</div><div class="stats" id="wstats"></div></div>
@@ -296,7 +324,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="bots">
-    <div class="sh"><span class="n">05</span><h2>Bots</h2><p>Ranked by settled P/L since the test started</p></div>
+    <div class="sh"><span class="n">06</span><h2>Bots</h2><p>Ranked by settled P/L since the test started</p></div>
     <article class="panel"><div class="scroll"><table>
       <thead><tr><th></th><th style="text-align:left">Bot</th><th>P/L</th><th>Return</th><th>Money in</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Max drawdown</th><th>Trend</th></tr></thead>
       <tbody id="board"></tbody></table></div></article>
@@ -309,7 +337,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="integrity">
-    <div class="sh"><span class="n">06</span><h2>Data integrity</h2><p>Proof that every bot recorded the market without holes, for the whole test</p></div>
+    <div class="sh"><span class="n">07</span><h2>Data integrity</h2><p>Proof that every bot recorded the market without holes, for the whole test</p></div>
     <article class="panel">
       <div class="verdict" id="verdict"><span class="sk" style="width:40%"></span></div>
       <div class="scroll"><table>
@@ -397,6 +425,8 @@ function render(d) {
     $("taperate").textContent = `${tape.filter(r => r[0] > now - 10).length} in 10 s`;
   }
 
+  renderLatency(d.latency, now);
+
   // 02 pipeline
   const I = bots.map(b => b.integrity), sum = f => bots.reduce((a, b, i) => a + f(b, I[i]), 0);
   const signals = sum((b, i) => i.signals), buys = sum((b, i) => i.buys), open = sum(b => b.open_n), settled = sum(b => b.trades);
@@ -480,6 +510,41 @@ function render(d) {
     $("integnote").textContent = `Coverage = the share of the ${dur(I[0].elapsed)} since the start in which the bot had fresh data; any hole longer than 1 s counts as missing. Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
   }
   drawChart();
+}
+
+function renderLatency(L, now) {
+  if (!L) return;
+  const ms = v => v == null ? "—" : v >= 1000 ? (v / 1000).toFixed(1) + '<small>s</small>' : Math.round(v) + '<small>ms</small>';
+  const tile = (k, v, x) => `<article class="panel lt"><div class="k">${k}</div><div class="v num">${ms(v)}</div><div class="x">${x}</div></article>`;
+  // a live order = Binance age + order round trip; the paper bots get Binance just as late and then wait 300 ms
+  const r = L.reaction, b = L.binance_stream.p50, paper = b == null ? null : b + 300;
+  const verdict = r == null ? "Measuring…" : (r <= paper
+    ? `A real order would land about ${Math.round(paper - r)} ms sooner than the realistic paper bots assume (${Math.round(paper)} ms), so their results are conservative.`
+    : `A real order would land about ${Math.round(r - paper)} ms later than the paper bots assume, so their results are optimistic.`)
+    + (r <= 120 ? " Fast enough for the small-move edge." : " The small-move edge needs under ~120 ms.");
+  const pos = r == null ? 0 : Math.min(100, r / 700 * 100);
+  $("lat").innerHTML =
+    tile("Order to Polymarket", L.clob.p50, `round trip · p95 ${L.clob.p95 ? Math.round(L.clob.p95) : "—"} · now ${L.clob.now ? Math.round(L.clob.now) : "—"}`) +
+    tile("Binance data age", L.monitor ? L.binance_stream.p50 : null, L.monitor ? `median 60 s · clock-corrected · p95 ${L.binance_stream.p95 ? Math.round(L.binance_stream.p95) : "—"}` : "start latmon.py to measure") +
+    tile("Polymarket book age", L.book_stream.p50, `median 60 s · incl. this dashboard's processing · p95 ${L.book_stream.p95 ? Math.round(L.book_stream.p95) : "—"}`) +
+    tile("Chainlink age", L.chainlink_age, "latest oracle point → now · updates ~1/s") +
+    `<article class="panel lt hero"><div class="k">Total reaction time</div><div class="v num">${ms(r)}</div>
+      <div class="x" style="font-family:var(--sans)">${verdict}</div>
+      <div class="gauge" aria-hidden="true"><i style="left:${pos}%"></i></div><div class="gauge-l"><span>0</span><span>100 ms</span><span>300 ms</span><span>700 ms</span></div></article>`;
+  // round-trip chart
+  const svg = $("latchart"), W = svg.clientWidth || 900, H = 200, m = {l: 48, r: 12, t: 10, b: 24}, h = L.history || [];
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const series = [{n: "Polymarket order", i: 1, c: "var(--c1)"}, {n: "Binance REST", i: 3, c: "var(--c3)"}, {n: "Polymarket Gamma", i: 2, c: "var(--c2)"}];
+  $("latlegend").innerHTML = series.map(s => `<span class="chip" style="cursor:default"><span class="key" style="border-color:${s.c}"></span>${s.n} <b>${h.length ? Math.round(h[h.length - 1][s.i]) + " ms" : "—"}</b></span>`).join("");
+  if (h.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">Collecting samples (every 5 s)</text>`; return; }
+  const t0 = h[0][0], t1 = Math.max(h[h.length - 1][0], t0 + 60), top = Math.max(400, ...h.flatMap(x => [x[1], x[2], x[3]])) * 1.05;
+  const X = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r), Y = v => m.t + (1 - v / top) * (H - m.t - m.b);
+  const yt = niceTicks(0, top, 4), step = [60, 300, 600, 900].find(s => (t1 - t0) / s <= 8) || 1800, xt = [];
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) xt.push(t);
+  svg.innerHTML = yt.map(v => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join("") +
+    [[100, "fast-edge target"], [300, "paper bots assume"]].map(([v, t]) => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--faint)" stroke-dasharray="3 4"/><text x="${W - m.r}" y="${Y(v) - 5}" text-anchor="end">${t} · ${v} ms</text>`).join("") +
+    xt.map(t => `<text x="${X(t)}" y="${H - 6}" text-anchor="middle">${hm(t)}</text>`).join("") +
+    series.map(s => `<polyline fill="none" stroke="${s.c}" stroke-width="${s.i === 1 ? 2 : 1.5}" stroke-linejoin="round" points="${h.map(x => X(x[0]).toFixed(1) + "," + Y(x[s.i]).toFixed(1)).join(" ")}"/>`).join("");
 }
 
 function renderWallet(w, now) {

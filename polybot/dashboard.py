@@ -8,7 +8,8 @@ DASH_SINCE  test start, "YYYY-MM-DD HH:MM" or "HH:MM" today (local time); every 
 DASH_HOURS  test length, for the progress bar (default 24)
 DASH_MARK   log line that marks the test start in each bot log (signal/reconnect counts start after the last one)
 
-The dashboard also runs its own Binance, Chainlink and Polymarket book feeds for the live "data in" panel.
+The dashboard runs its own Chainlink and Polymarket book feeds for the live "data in" panel; Binance and latency come
+from latmon.py (run it alongside: python latmon.py), a separate process so this one's load can't skew them.
 """
 import collections
 import json
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import requests
 
-from feeds import BinanceFeed, BookFeed, ChainlinkFeed
+from feeds import BookFeed, ChainlinkFeed
 from market import MarketFeed
 
 RUNS = Path(__file__).parent / "runs"
@@ -175,7 +176,7 @@ def bot_state(name, db_name):
 
 
 # ---- the dashboard's own live feeds (data-in panel)
-bfeed, cfeed, book = BinanceFeed(), ChainlinkFeed(["btc/usd"]), BookFeed()
+cfeed, book = ChainlinkFeed(["btc/usd"]), BookFeed()
 mfeed = MarketFeed(http, book)
 upmid = collections.deque(maxlen=240)            # (t, UP mid) sampled every 0.5 s
 feedmeta = {"market": None, "msgs": [], "cl": []}
@@ -202,9 +203,7 @@ def sampler():
 
 
 def feeds_state(now):
-    with bfeed.lock:
-        pts = [p for p in bfeed.pts if p[0] > now - 120]
-    rate_b = sum(1 for p in pts if p[0] > now - 5) / 5
+    mb = (latmon() or {}).get("binance") or {"price": None, "age": None, "rate": 0, "series": []}
     with cfeed.lock:
         cl = sorted((t, v) for t, v in cfeed.points.get("btc/usd", {}).items() if t > now - 120)
     msgs = feedmeta["msgs"]
@@ -216,10 +215,8 @@ def feeds_state(now):
         with book.lock:
             tape = [[t, side[a], px, sz, ts] for t, a, px, sz, ts in book.prints[-200:] if a in side][-30:][::-1]
     u = upmid[-1] if upmid else None
-    thin = lambda xs, k: xs[::max(1, len(xs) // k)]
     return {
-        "binance": {"price": pts[-1][1] if pts else None, "age": now - pts[-1][0] if pts else None, "rate": rate_b,
-                    "series": [[round(t, 2), v] for t, v in thin(pts, 240)]},
+        "binance": {k: mb.get(k) for k in ("price", "age", "rate", "series")},
         "chainlink": {"price": cl[-1][1] if cl else None, "age": now - cfeed.last_msg if cfeed.last_msg else None,
                       "rate": sum(1 for t, _ in cl if t > now - 10) / 10, "series": cl},
         "polymarket": {"mid": u[1] if u else None, "bid": u[2] if u else None, "ask": u[3] if u else None,
@@ -320,10 +317,46 @@ def wallet_state():
             "fills": sum(r["fills"] for r in active), "recent": sorted(recent, key=lambda x: -x[0])[:25]}
 
 
-def api_latency():
-    t = time.time()
-    http.get("https://clob.polymarket.com/time", timeout=5)
-    return round((time.time() - t) * 1000)
+def pctl(xs, q):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None
+
+
+LATFILE = RUNS / "latency.json"
+
+
+def latmon():
+    """Latest snapshot from latmon.py (a separate process, so this one's load can't inflate the numbers)."""
+    try:
+        d = json.loads(LATFILE.read_text())
+        return d if time.time() - d["t"] < 10 else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def latency_state(now):
+    m = latmon()
+    with book.lock:
+        pl = [l for t, l in book.lags if t > now - 60]
+    with cfeed.lock:
+        pts = cfeed.points.get("btc/usd", {})
+        cl_t = max(pts) if pts else None
+    hist = [x for x in (m["history"] if m else []) if x[0] > now - 3600]
+    recent = [x for x in hist if x[0] > now - 300]
+    clob = pctl([x[1] for x in recent], .5)
+    b = m["binance"]["lag_p50"] if m else None
+    return {
+        "monitor": m is not None,
+        "clob": {"now": hist[-1][1] if hist else None, "p50": clob, "p95": pctl([x[1] for x in recent], .95)},
+        "gamma": {"now": hist[-1][2] if hist else None, "p50": pctl([x[2] for x in recent], .5)},
+        "binance_rest": {"now": hist[-1][3] if hist else None, "p50": pctl([x[3] for x in recent], .5)},
+        "binance_stream": {"p50": b, "p95": m["binance"]["lag_p95"] if m else None},
+        "book_stream": {"p50": pctl(pl, .5), "p95": pctl(pl, .95)},
+        "chainlink_age": (now - cl_t) * 1000 if cl_t else None,
+        "offset": m["offset"] if m else None,
+        "reaction": b + clob if b is not None and clob is not None else None,
+        "history": hist,
+    }
 
 
 def state():
@@ -332,7 +365,7 @@ def state():
     now = time.time()
     return {"now": now, "test": {"start": SINCE, "end": SINCE + HOURS * 3600}, "bots": bots, "feed": feed,
             "feeds": feeds_state(now), "gap_sec": GAP_SEC,
-            "wallet": wallet_state(), "api_ms": cached("lat", 30, api_latency)}
+            "wallet": wallet_state(), "latency": (L := latency_state(now)), "api_ms": L["clob"]["now"]}
 
 
 class H(BaseHTTPRequestHandler):
@@ -365,7 +398,7 @@ PAGE_FILE = Path(__file__).parent / "dashboard.html"
 if __name__ == "__main__":
     threading.Thread(target=wallet_history, daemon=True).start()
     threading.Thread(target=wallet_live, daemon=True).start()
-    bfeed.start(); cfeed.start(); book.start()
+    cfeed.start(); book.start()
     threading.Thread(target=sampler, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT} | test from {time.strftime('%Y-%m-%d %H:%M', time.localtime(SINCE))}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

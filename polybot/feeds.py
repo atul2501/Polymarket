@@ -3,6 +3,7 @@
 - BookFeed: live order books from Polymarket's CLOB market socket.
 Both reconnect on any error; callers fall back to REST when data is missing or stale."""
 import asyncio
+import collections
 import json
 import logging
 import ssl
@@ -114,6 +115,7 @@ class BookFeed:
         self.lock = threading.Lock()
         self.prints = []       # (unix time, asset_id, price, size, taker side) from last_trade_price events
         self.msgs = 0          # events received (the dashboard shows the rate)
+        self.lags = collections.deque(maxlen=4000)  # (local time, ms between Polymarket's event stamp and arrival)
 
     def start(self):
         _thread(self._run)
@@ -130,6 +132,8 @@ class BookFeed:
         now = time.time()
         with self.lock:
             self.msgs += 1
+            if ev.get("timestamp"):
+                self.lags.append((now, now * 1000 - float(ev["timestamp"])))
             if ev.get("event_type") == "last_trade_price":
                 self.prints.append((now, ev["asset_id"], float(ev["price"]), float(ev["size"]), ev["side"]))
                 if len(self.prints) > 5000:
@@ -193,6 +197,7 @@ class BinanceFeed:
     def __init__(self):
         self.pts = []          # (unix time, mid)
         self.lock = threading.Lock()
+        self.lags = collections.deque(maxlen=4000)  # (local time, ms between Binance's event time E and arrival)
 
     def start(self):
         _thread(self._run)
@@ -210,6 +215,8 @@ class BinanceFeed:
                         now = time.time()
                         with self.lock:
                             self.pts.append((now, mid))
+                            if d.get("E"):
+                                self.lags.append((now, now * 1000 - d["E"]))
                             if len(self.pts) > 6000:
                                 cut = now - 15
                                 self.pts = [x for x in self.pts if x[0] >= cut]
