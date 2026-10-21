@@ -177,6 +177,14 @@ def main():
     sf._memo = {}
     assert sf._cached("k", lambda: calls.append(1) or len(calls)) == 1 == sf._cached("k", lambda: 99) and len(calls) == 1
 
+    # taker: Binance move -> side; entry needs time left, a sane ask and SIZE shares at it
+    import taker
+    assert taker.signal(2.5) == "Up" and taker.signal(-3) == "Down" and taker.signal(1.9) is None and taker.signal(None) is None
+    assert taker.entry_price(Book(0.49, 50, 0.50, 40), 120) == 0.50
+    assert taker.entry_price(Book(0.49, 50, 0.50, 5), 120) is None          # fewer than SIZE shares at the ask
+    assert taker.entry_price(Book(0.97, 50, 0.98, 40), 120) is None         # ask above MAX_ASK
+    assert taker.entry_price(Book(0.49, 50, 0.50, 40), 20) is None          # last 30 s
+
     print("ok")
 
 
