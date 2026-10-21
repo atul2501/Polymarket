@@ -6,7 +6,11 @@ refreshes every second. Binds to 127.0.0.1 only. The stop button sends SIGTERM t
 DASH_BOTS   "name=ledger.db,..." (files under runs/)
 DASH_SINCE  test start, "YYYY-MM-DD HH:MM" or "HH:MM" today (local time); every number on the page counts from here
 DASH_HOURS  test length, for the progress bar (default 24)
+DASH_MARK   log line that marks the test start in each bot log (signal/reconnect counts start after the last one)
+
+The dashboard also runs its own Binance, Chainlink and Polymarket book feeds for the live "data in" panel.
 """
+import collections
 import json
 import os
 import signal
@@ -19,6 +23,9 @@ from pathlib import Path
 
 import requests
 
+from feeds import BinanceFeed, BookFeed, ChainlinkFeed
+from market import MarketFeed
+
 RUNS = Path(__file__).parent / "runs"
 BOTS = [b.split("=") for b in os.getenv("DASH_BOTS", "T-0.3=tk-d03.db,T-0.1=tk-d01.db,T-3bp=tk-3bp.db").split(",")]
 WALLET = "0xc53375ff94e96100f2b30a4b5775db35218d69a9"
@@ -26,6 +33,8 @@ PORT = int(os.getenv("DASH_PORT", 8787))
 _since = os.getenv("DASH_SINCE", time.strftime("%H:%M"))
 SINCE = int(time.mktime(time.strptime(_since if len(_since) > 5 else time.strftime("%Y-%m-%d ") + _since, "%Y-%m-%d %H:%M")))
 HOURS = float(os.getenv("DASH_HOURS", 24))
+MARK = os.getenv("DASH_MARK", "--- restart for 24 h test")
+GAP_SEC = 2.0          # bots tick every 0.05-0.1 s; a hole longer than this counts as a gap in the recording
 http = requests.Session()
 cache = {}
 
@@ -54,12 +63,80 @@ def utc(ts):
     return time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
 
 
+class Tracker:
+    """Per bot, incremental: recording coverage and gaps since the test start, plus counts from the log."""
+
+    def __init__(self, path):
+        self.path, self.log = path, path.with_suffix(".log")
+        self.t_last = self.b_last = SINCE
+        self.ticks = self.bn = self.gaps = self.bn_gaps = 0
+        self.max_gap = self.bn_max_gap = 0.0
+        self.miss = self.bn_miss = 0.0                 # seconds not covered: interval time beyond 1 s
+        self.off = None
+        self.c = collections.Counter()
+
+    def _scan(self, con, table, last):
+        n = gaps = 0
+        worst = miss = 0.0
+        for (t,) in con.execute(f"SELECT t FROM {table} WHERE t > ? ORDER BY t", (last,)):
+            d = t - last
+            if d > GAP_SEC:
+                gaps += 1
+            worst = max(worst, d)
+            miss += max(0.0, d - 1.0)
+            last = t
+            n += 1
+        return n, gaps, worst, miss, last
+
+    def update(self, con):
+        n, g, w, ms, self.t_last = self._scan(con, "ticks", self.t_last)
+        self.ticks += n; self.gaps += g; self.max_gap = max(self.max_gap, w); self.miss += ms
+        n, g, w, ms, self.b_last = self._scan(con, "binance", self.b_last)
+        self.bn += n; self.bn_gaps += g; self.bn_max_gap = max(self.bn_max_gap, w); self.bn_miss += ms
+        if not self.log.exists():
+            return
+        with open(self.log, "rb") as f:
+            if self.off is None:                      # first pass: count from the last test-start marker
+                data = f.read()
+                i = data.rfind(MARK.encode())
+                self.off = len(data)
+                self._count(data[i:] if i >= 0 else b"")
+            else:
+                f.seek(self.off)
+                data = f.read()
+                self.off += len(data)
+                self._count(data)
+
+    def _count(self, data):
+        for line in data.decode(errors="ignore").splitlines():
+            for key in ("SIGNAL", " BUY ", " SELL ", "SETTLED", "reconnecting"):
+                if key in line:
+                    self.c[key.strip()] += 1
+
+    def view(self, now):
+        el = max(1.0, min(now, SINCE + HOURS * 3600) - SINCE)
+        tail_gap = now - self.t_last                  # an ongoing hole counts too
+        gaps = self.gaps + (tail_gap > GAP_SEC)
+        miss = self.miss + max(0.0, tail_gap - 1.0)
+        return {"ticks": self.ticks, "tick_rate": self.ticks / el, "gaps": gaps,
+                "coverage": max(0.0, 1 - miss / el) * 100, "bn_coverage": max(0.0, 1 - self.bn_miss / el) * 100,
+                "max_gap": max(self.max_gap, tail_gap if tail_gap > GAP_SEC else 0),
+                "bn": self.bn, "bn_gaps": self.bn_gaps, "bn_max_gap": self.bn_max_gap,
+                "signals": self.c["SIGNAL"], "buys": self.c["BUY"], "sells": self.c["SELL"],
+                "settled_logs": self.c["SETTLED"], "reconnects": self.c["reconnecting"], "elapsed": el}
+
+
+trackers = {}
+
+
 def bot_state(name, db_name):
     path = RUNS / db_name
     if not path.exists():
         return {"name": name, "missing": True}
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
     now = time.time()
+    tr = trackers.setdefault(name, Tracker(path))
+    tr.update(con)
     # this test only: rounds that ended after the start
     rows = con.execute("SELECT ts, side, price, shares, pnl, status, cost, window_end FROM trades "
                        "WHERE window_end > ? ORDER BY id", (SINCE,)).fetchall()
@@ -92,7 +169,63 @@ def bot_state(name, db_name):
         "feed": [{"bot": name, "t": utc(r[0]), "side": r[1], "price": r[2], "shares": r[3], "status": r[5],
                   "pnl": r[4]} for r in rows[-30:]],
         "tick": dict(zip(["t", "slug", "t_left", "up_bid", "up_ask", "dn_bid", "dn_ask"], tick)) if tick else None,
-        "warnings": [l[:200] for l in lines if " W " in l][-4:],
+        "warnings": [l[:200] for l in lines if " W " in l][-4:], "integrity": tr.view(now),
+        "rounds_traded": con.execute("SELECT count(DISTINCT window_end) FROM trades WHERE window_end > ?", (SINCE,)).fetchone()[0],
+    }
+
+
+# ---- the dashboard's own live feeds (data-in panel)
+bfeed, cfeed, book = BinanceFeed(), ChainlinkFeed(["btc/usd"]), BookFeed()
+mfeed = MarketFeed(http, book)
+upmid = collections.deque(maxlen=240)            # (t, UP mid) sampled every 0.5 s
+feedmeta = {"market": None, "msgs": [], "cl": []}
+
+
+def sampler():
+    """Keep the book feed on the current market and sample its UP mid; track message rates."""
+    while True:
+        now = time.time()
+        try:
+            m = mfeed.current(now)
+            if m:
+                m = m[0]
+                if feedmeta["market"] is None or feedmeta["market"].slug != m.slug:
+                    feedmeta["market"] = m
+                    book.watch([m.up_token, m.down_token])
+                b = book.book(m.up_token, max_age=5)
+                if b and b.bid is not None and b.ask is not None:
+                    upmid.append((now, (b.bid + b.ask) / 2, b.bid, b.ask))
+        except Exception:                          # ponytail: a missed sample just leaves a hole in the sparkline
+            pass
+        feedmeta["msgs"] = (feedmeta["msgs"] + [(now, book.msgs)])[-20:]
+        time.sleep(0.5)
+
+
+def feeds_state(now):
+    with bfeed.lock:
+        pts = [p for p in bfeed.pts if p[0] > now - 120]
+    rate_b = sum(1 for p in pts if p[0] > now - 5) / 5
+    with cfeed.lock:
+        cl = sorted((t, v) for t, v in cfeed.points.get("btc/usd", {}).items() if t > now - 120)
+    msgs = feedmeta["msgs"]
+    rate_p = (msgs[-1][1] - msgs[0][1]) / max(0.5, msgs[-1][0] - msgs[0][0]) if len(msgs) > 1 else 0
+    m = feedmeta["market"]
+    tape = []
+    if m:
+        side = {m.up_token: "Up", m.down_token: "Down"}
+        with book.lock:
+            tape = [[t, side[a], px, sz, ts] for t, a, px, sz, ts in book.prints[-200:] if a in side][-30:][::-1]
+    u = upmid[-1] if upmid else None
+    thin = lambda xs, k: xs[::max(1, len(xs) // k)]
+    return {
+        "binance": {"price": pts[-1][1] if pts else None, "age": now - pts[-1][0] if pts else None, "rate": rate_b,
+                    "series": [[round(t, 2), v] for t, v in thin(pts, 240)]},
+        "chainlink": {"price": cl[-1][1] if cl else None, "age": now - cfeed.last_msg if cfeed.last_msg else None,
+                      "rate": sum(1 for t, _ in cl if t > now - 10) / 10, "series": cl},
+        "polymarket": {"mid": u[1] if u else None, "bid": u[2] if u else None, "ask": u[3] if u else None,
+                       "age": now - book.updated.get(m.up_token, 0) if m else None, "rate": rate_p,
+                       "slug": m.slug if m else None, "series": [[round(t, 2), v] for t, v, *_ in upmid]},
+        "tape": tape,
     }
 
 
@@ -196,7 +329,9 @@ def api_latency():
 def state():
     bots = [bot_state(n, f) for n, f in BOTS]
     feed = sorted((x for b in bots if not b.get("missing") for x in b.pop("feed")), key=lambda x: -x["t"])[:40]
-    return {"now": time.time(), "test": {"start": SINCE, "end": SINCE + HOURS * 3600}, "bots": bots, "feed": feed,
+    now = time.time()
+    return {"now": now, "test": {"start": SINCE, "end": SINCE + HOURS * 3600}, "bots": bots, "feed": feed,
+            "feeds": feeds_state(now), "gap_sec": GAP_SEC,
             "wallet": wallet_state(), "api_ms": cached("lat", 30, api_latency)}
 
 
@@ -230,5 +365,7 @@ PAGE_FILE = Path(__file__).parent / "dashboard.html"
 if __name__ == "__main__":
     threading.Thread(target=wallet_history, daemon=True).start()
     threading.Thread(target=wallet_live, daemon=True).start()
+    bfeed.start(); cfeed.start(); book.start()
+    threading.Thread(target=sampler, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT} | test from {time.strftime('%Y-%m-%d %H:%M', time.localtime(SINCE))}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

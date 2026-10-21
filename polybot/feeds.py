@@ -113,6 +113,7 @@ class BookFeed:
         self.assets = set()
         self.lock = threading.Lock()
         self.prints = []       # (unix time, asset_id, price, size, taker side) from last_trade_price events
+        self.msgs = 0          # events received (the dashboard shows the rate)
 
     def start(self):
         _thread(self._run)
@@ -128,6 +129,7 @@ class BookFeed:
     def _apply(self, ev):
         now = time.time()
         with self.lock:
+            self.msgs += 1
             if ev.get("event_type") == "last_trade_price":
                 self.prints.append((now, ev["asset_id"], float(ev["price"]), float(ev["size"]), ev["side"]))
                 if len(self.prints) > 5000:

@@ -17,6 +17,7 @@ python taker.py        live paper run (ledger TK_LEDGER, default runs/taker.db);
 """
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -56,6 +57,20 @@ def entry_price(book, t_left):
     return book.ask if book.ask_size >= SIZE else None
 
 
+def settler():
+    """Settle finished rounds off the trading loop: a slow Polymarket API froze the loop for ~10 s (21 Oct 22:4x)."""
+    led, feed = Ledger(LEDGER), MarketFeed(requests.Session())   # own connection: sqlite objects stay in their thread
+    while True:
+        try:
+            for slug in led.unsettled(time.time()):   # settle mode, or a sale that never happened (no bid at the exit)
+                if w := feed.outcome(slug):
+                    led.settle(slug, w)
+                    log.info("SETTLED %s -> %s", slug, w)
+        except (requests.RequestException, ValueError, KeyError) as e:
+            log.warning("settle error: %r", e)
+        time.sleep(30)
+
+
 def live():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname).1s %(message)s", datefmt="%H:%M:%S")
     http = requests.Session()
@@ -64,7 +79,8 @@ def live():
     bn = BinanceFeed().start()
     pending, pos = None, None                     # pending: (fire_at, market, side); pos: (id, market, side, exit_at)
     last_entry = {"Up": 0.0, "Down": 0.0}
-    last_seen, last_tick, last_settle, last_log = time.time(), 0.0, 0.0, 0.0
+    last_seen, last_tick, last_log = time.time(), 0.0, 0.0
+    threading.Thread(target=settler, daemon=True).start()
     log.info("taker start | PAPER | %g bp in %gs -> buy %g @ ask after %.2fs, %s | ask %.2f-%.2f "
              "| no entry < %gs left | cooldown %gs | ledger %s", MOVE_BPS, MOVE_SEC, SIZE, DELAY_SEC,
              "hold to settlement" if SETTLE else f"sell at bid after {HOLD_SEC:g}s", MIN_ASK, MAX_ASK, MIN_LEFT,
@@ -115,12 +131,6 @@ def live():
                 last_log = now
                 n, pnl = led.db.execute("SELECT count(*), coalesce(sum(pnl),0) FROM trades WHERE status!='open'").fetchone()
                 log.info("taker status | %d trades closed | P/L %+.2f", n, pnl)
-            if now - last_settle > 30:
-                last_settle = now
-                for slug in led.unsettled(now):   # settle mode, or a sale that never happened (no bid at the exit)
-                    if w := feed.outcome(slug):
-                        led.settle(slug, w)
-                        log.info("SETTLED %s -> %s", slug, w)
         except (requests.RequestException, ValueError, KeyError) as e:
             log.warning("api error: %r", e)
         time.sleep(LOOP_SEC)
