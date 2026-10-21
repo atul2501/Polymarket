@@ -209,10 +209,13 @@ class BinanceFeed:
             url = BINANCE_WS[i % len(BINANCE_WS)]
             try:
                 async with websockets.connect(url, ssl=CTX, open_timeout=10, ping_interval=20) as ws:
+                    t0 = time.time()
                     while True:
                         d = json.loads(await asyncio.wait_for(ws.recv(), 10))  # silent 10 s -> reconnect
                         mid = (float(d["b"]) + float(d["a"])) / 2
                         now = time.time()
+                        if i % 2 and now - t0 > 60:   # on spot (no event time, fewer updates): retry futures each minute
+                            break
                         with self.lock:
                             self.pts.append((now, mid))
                             if d.get("E"):
@@ -220,6 +223,7 @@ class BinanceFeed:
                             if len(self.pts) > 6000:
                                 cut = now - 15
                                 self.pts = [x for x in self.pts if x[0] >= cut]
+                i = 0
             except Exception as e:  # ponytail: alternate futures/spot on any error; no backoff growth
                 log.warning("binance socket (%s): %r, reconnecting", url.split("/")[2], e)
                 i += 1

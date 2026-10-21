@@ -17,6 +17,7 @@ python taker.py        live paper run (ledger TK_LEDGER, default runs/taker.db);
 """
 import logging
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -66,7 +67,7 @@ def settler():
                 if w := feed.outcome(slug):
                     led.settle(slug, w)
                     log.info("SETTLED %s -> %s", slug, w)
-        except (requests.RequestException, ValueError, KeyError) as e:
+        except (requests.RequestException, ValueError, KeyError, sqlite3.Error) as e:   # "database is locked" killed it 21 Oct 23:14
             log.warning("settle error: %r", e)
         time.sleep(30)
 

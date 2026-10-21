@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS ticks(
 
 class Ledger:
     def __init__(self, path=config.LEDGER_PATH):
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, timeout=30)   # bots, settler and dashboard share the file
         self.db.executescript(SCHEMA)
 
     def _one(self, sql, *args):
