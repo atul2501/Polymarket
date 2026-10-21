@@ -257,7 +257,7 @@ const $ = id => document.getElementById(id);
 const SLOTS = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
 const RULES = { "W-3bp": "Wallet rule · 3 bp move · hold to settle", "W-0.5": "Wallet rule · 0.5 bp move · hold to settle",
   "T-0.3": "Fast taker · 2 bp · sell after 5 s", "T-0.1": "Fast taker · 0.1 s reaction (server estimate)", "T-3bp": "Fast taker · 3 bp · sell after 5 s" };
-let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All";
+let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const money = v => v == null ? "—" : (v >= 0 ? "+$" : "−$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const pct = v => v == null ? "—" : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + "%";
@@ -456,8 +456,8 @@ function drawChart() {
     ? "Return % = cumulative P/L ÷ money put in, so a $30k wallet and a $10 bot share one scale · one point per settled 5-minute round · click a name to hide it"
     : "Cumulative dollars · the wallet trades about 1,000× our size, so switch to Return % to compare skill";
   const times = [...new Set(all.map(p => p[0]))].sort((a, b) => a - b), hit = $("hit"), tip = $("tip"), xh = $("xh"), xd = $("xd");
-  hit.onpointermove = e => {
-    const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) * W / r.width;
+  const showAt = clientX => {
+    const r = svg.getBoundingClientRect(), x = (clientX - r.left) * W / r.width;
     const t = times.reduce((a, b) => Math.abs(X(b) - x) < Math.abs(X(a) - x) ? b : a);
     xh.setAttribute("x1", X(t)); xh.setAttribute("x2", X(t)); xh.style.display = "";
     const rows = vis.map(l => ({l, v: valueAt(l.p, t)})).filter(o => o.v != null).sort((a, b) => b.v - a.v);
@@ -467,17 +467,22 @@ function drawChart() {
     const px = X(t) * r.width / W, w = tip.offsetWidth;
     tip.style.left = (px + 14 + w > r.width ? px - 14 - w : px + 14) + "px"; tip.style.top = "10px";
   };
-  hit.onpointerleave = () => { tip.style.display = "none"; xh.style.display = "none"; xd.innerHTML = ""; };
+  hit.onpointermove = e => { HOVER = e.clientX; showAt(HOVER); };
+  hit.onpointerleave = () => { HOVER = null; tip.style.display = "none"; xh.style.display = "none"; xd.innerHTML = ""; };
+  if (HOVER != null) showAt(HOVER);          // the chart redraws every second; keep the tooltip where the pointer is
 }
 window.addEventListener("resize", () => drawChart());
 document.querySelectorAll(".seg button").forEach(b => b.onclick = () => { MODE = b.dataset.m;
   document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("on", x === b)); drawChart(); });
 
 async function tick() {
+  if (BUSY) return;                          // never stack requests if one is slow
+  BUSY = true;
   try { LAST = await (await fetch("/api/state", {cache: "no-store"})).json(); render(LAST); }
   catch (e) { $("status").className = "pill bad"; $("status").innerHTML = '<span class="dot"></span>dashboard offline'; }
+  finally { BUSY = false; }
 }
-tick(); setInterval(tick, 2000);
+tick(); setInterval(tick, 1000);
 
 // hold-to-stop
 let holdT = null;

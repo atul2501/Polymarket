@@ -1,7 +1,7 @@
 """Local dashboard for the paper bots: python dashboard.py  ->  http://localhost:8787
 
 Reads the bots' SQLite ledgers and logs read-only, plus the copied wallet's public fills, and serves one page that
-refreshes every 2 s. Binds to 127.0.0.1 only. The stop button sends SIGTERM to the bot processes (paper bots only).
+refreshes every second. Binds to 127.0.0.1 only. The stop button sends SIGTERM to the bot processes (paper bots only).
 
 DASH_BOTS   "name=ledger.db,..." (files under runs/)
 DASH_SINCE  test start, "YYYY-MM-DD HH:MM" or "HH:MM" today (local time); every number on the page counts from here
@@ -41,6 +41,15 @@ def cached(key, ttl, fn):
     return v
 
 
+def tail(path, size=65536):
+    """Last lines of a log without reading the whole file (they grow to many MB)."""
+    if not path.exists():
+        return []
+    with open(path, "rb") as f:
+        f.seek(max(0, f.seek(0, 2) - size))
+        return f.read().decode(errors="ignore").splitlines()[1:]
+
+
 def utc(ts):
     return time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
 
@@ -69,8 +78,7 @@ def bot_state(name, db_name):
         c += k
         series.append([e, round(a, 2), round(c, 2)])
     tick = con.execute("SELECT t, slug, t_left, up_bid, up_ask, dn_bid, dn_ask FROM ticks ORDER BY rowid DESC LIMIT 1").fetchone()
-    log = path.with_suffix(".log")
-    lines = log.read_text(errors="ignore").splitlines()[-600:] if log.exists() else []
+    lines = tail(path.with_suffix(".log"))
     cost = sum(r[6] for r in closed)
     n = len(closed)
     return {
@@ -114,6 +122,20 @@ def wallet_round(slug):
 
 
 settled = {}   # round start -> the wallet's settled round, filled by wallet_history() in the background
+live = {}      # current round start -> the wallet's fills so far, refreshed by wallet_live() every 3 s
+
+
+def wallet_live():
+    """Poll the wallet's current round in the background so /api/state never waits on Polymarket."""
+    while True:
+        cur = int(time.time()) // 300 * 300
+        try:
+            live[cur] = wallet_round(f"btc-updown-5m-{cur}")
+            for k in [k for k in live if k < cur]:
+                del live[k]
+        except Exception:                      # ponytail: keep the last good snapshot, retry in 3 s
+            pass
+        time.sleep(3)
 
 
 def wallet_history():
@@ -138,7 +160,7 @@ def wallet_history():
                               "pnl": (f[w][0] - f["Up"][1] - f["Down"][1]) if f["fills"] else 0.0}
             except Exception:                  # ponytail: retry the round on the next pass
                 break
-        time.sleep(20)
+        time.sleep(10)
 
 
 def wallet_state():
@@ -150,13 +172,13 @@ def wallet_state():
         cum += r["pnl"]
         cost += r["cost"]
         series.append([r["start"] + 300, round(cum, 2), round(cost, 2)])
-    live = cached(("wl", cur), 10, lambda: wallet_round(f"btc-updown-5m-{cur}"))
+    lv = live.get(cur)
     active = [r for r in rounds if r["fills"]]
     pairs = [r["up"][1] / r["up"][0] + r["down"][1] / r["down"][0] for r in active if r["up"][0] and r["down"][0]]
     shares = sum(r["up"][0] + r["down"][0] for r in active)
-    recent = ([[*x, "live"] for x in live["list"]] if isinstance(live, dict) and live.get("list") else []) + \
+    recent = ([[*x, "live"] for x in lv["list"]] if isinstance(lv, dict) and lv.get("list") else []) + \
              [[*x, r["winner"]] for r in reversed(rounds[-2:]) for x in r["list"]]
-    return {"live": {k: v for k, v in live.items() if k != "list"} if isinstance(live, dict) else None,
+    return {"live": {k: v for k, v in lv.items() if k != "list"} if isinstance(lv, dict) else None,
             "live_start": cur, "rounds": [{k: v for k, v in r.items() if k != "list"} for r in rounds[-8:][::-1]],
             "series": series, "pnl": round(cum, 2), "cost": round(cost, 2), "ret": cum / cost * 100 if cost else None,
             "n": len(rounds), "active": len(active), "won": sum(r["pnl"] > 0 for r in active),
@@ -175,7 +197,7 @@ def state():
     bots = [bot_state(n, f) for n, f in BOTS]
     feed = sorted((x for b in bots if not b.get("missing") for x in b.pop("feed")), key=lambda x: -x["t"])[:40]
     return {"now": time.time(), "test": {"start": SINCE, "end": SINCE + HOURS * 3600}, "bots": bots, "feed": feed,
-            "wallet": cached("wallet", 10, wallet_state), "api_ms": cached("lat", 30, api_latency)}
+            "wallet": wallet_state(), "api_ms": cached("lat", 30, api_latency)}
 
 
 class H(BaseHTTPRequestHandler):
@@ -207,5 +229,6 @@ PAGE_FILE = Path(__file__).parent / "dashboard.html"
 
 if __name__ == "__main__":
     threading.Thread(target=wallet_history, daemon=True).start()
+    threading.Thread(target=wallet_live, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT} | test from {time.strftime('%Y-%m-%d %H:%M', time.localtime(SINCE))}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
