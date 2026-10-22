@@ -11,7 +11,9 @@ DASH_MARK   log line that marks the test start in each bot log (signal/reconnect
 The dashboard runs its own Chainlink and Polymarket book feeds for the live "data in" panel; Binance and latency come
 from latmon.py (run it alongside: python latmon.py), a separate process so this one's load can't skew them.
 """
+import base64
 import collections
+import hmac
 import json
 import os
 import signal
@@ -31,6 +33,8 @@ RUNS = Path(__file__).parent / "runs"
 BOTS = [b.split("=") for b in os.getenv("DASH_BOTS", "T-0.3=tk-d03.db,T-0.1=tk-d01.db,T-3bp=tk-3bp.db").split(",")]
 WALLET = "0xc53375ff94e96100f2b30a4b5775db35218d69a9"
 PORT = int(os.getenv("DASH_PORT", 8787))
+HOST = os.getenv("DASH_HOST", "127.0.0.1")       # 0.0.0.0 to open it beyond the machine (then DASH_PASS is required)
+AUTH = (os.getenv("DASH_USER", "admin"), os.getenv("DASH_PASS", ""))   # HTTP Basic login; off when DASH_PASS is empty
 _since = os.getenv("DASH_SINCE", time.strftime("%H:%M"))
 SINCE = int(time.mktime(time.strptime(_since if len(_since) > 5 else time.strftime("%Y-%m-%d ") + _since, "%Y-%m-%d %H:%M")))
 HOURS = float(os.getenv("DASH_HOURS", 24))
@@ -398,13 +402,31 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def authed(self):
+        """True if no password is set, or the request carries the right Basic login; else asks the browser for it."""
+        if not AUTH[1]:
+            return True
+        want = "Basic " + base64.b64encode(f"{AUTH[0]}:{AUTH[1]}".encode()).decode()
+        if hmac.compare_digest(self.headers.get("Authorization", ""), want):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="polybot", charset="UTF-8"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_GET(self):
+        if not self.authed():
+            return
         if self.path.startswith("/api/state"):
             return self.send(200, json.dumps(state()).encode(), "application/json")
         self.send(200, PAGE_FILE.read_bytes(), "text/html; charset=utf-8")   # re-read: edits show on reload
 
     def do_POST(self):
+        if not self.authed():
+            return
         if self.path == "/api/stop":
+            (RUNS / "STOP").touch()                  # live bots stop opening trades (delete the file to resume)
             pids = subprocess.run(["pgrep", "-f", "MacOS/Python (taker|mm).py$"], capture_output=True, text=True).stdout.split()
             for p in pids:
                 os.kill(int(p), signal.SIGTERM)
@@ -420,4 +442,6 @@ if __name__ == "__main__":
     cfeed.start(); book.start()
     threading.Thread(target=sampler, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT} | test from {time.strftime('%Y-%m-%d %H:%M', time.localtime(SINCE))}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    if HOST not in ("127.0.0.1", "localhost") and not AUTH[1]:
+        raise SystemExit("DASH_HOST opens the dashboard beyond this machine: set DASH_PASS (and DASH_USER) first")
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
