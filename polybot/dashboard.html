@@ -62,6 +62,7 @@ nav.sec a:hover, nav.sec a.on { color: var(--ink); background: var(--s2); }
 .track i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transform: scaleX(0); transform-origin: left; transition: transform .6s ease; }
 .badge { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border-radius: 8px; font-size: 12px; font-weight: 600; background: var(--s2); color: var(--ink-2); white-space: nowrap; }
 .badge.ok { background: var(--up-bg); color: var(--up); } .badge.bad { background: var(--down-bg); color: var(--down); } .badge.paper { background: var(--warn-bg); color: var(--warn); letter-spacing: .06em; }
+.badge.live { background: var(--up-bg); color: var(--up); font-family: var(--mono); letter-spacing: .02em; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; flex: none; }
 .live-dot.on::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid currentColor; opacity: 0; animation: ping 1.8s ease-out infinite; }
 @keyframes ping { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.6); opacity: 0; } }
@@ -268,7 +269,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
     <div class="grow"></div>
     <div class="run"><div class="l"><span id="tlabel">Paper test</span><b id="tleft"></b></div><div class="track"><i id="tbar"></i></div></div>
     <span class="badge" id="status"><span class="live-dot"></span>Connecting</span>
-    <span class="badge paper">PAPER</span>
+    <span class="badge paper" id="mode">PAPER</span>
     <span class="num muted" id="clock" style="font-size:12px;min-width:60px"></span>
     <button class="stop" id="stop" title="Hold for 2 seconds to stop every paper bot on this Mac"><i></i><span>Hold to stop</span></button>
   </div>
@@ -423,6 +424,9 @@ function render(d) {
   // header
   $("clock").textContent = hms(now);
   const T = d.test, el = now - T.start, len = T.end - T.start;
+  const LV = d.live;                                  // live bot: mode + USDC balance (null = paper only)
+  $("mode").className = "badge " + (LV ? "live" : "paper");
+  $("mode").textContent = !LV ? "PAPER" : LV.usdc == null ? LV.mode : `${LV.mode} · USDC $${LV.usdc.toFixed(2)}`;
   $("tlabel").innerHTML = `${Math.round(len / 3600)} h test · <b>${dur(el)}</b> in`;
   $("tleft").textContent = now < T.end ? `${dur(T.end - now)} left` : "finished";
   $("tbar").style.transform = `scaleX(${Math.min(1, Math.max(0, el / len))})`;

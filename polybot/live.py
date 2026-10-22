@@ -9,6 +9,7 @@ TK_LIVE_DRY=1 signs every order but never posts it (fills simulated at the limit
 Orders are FAK (fill-and-kill): fill what the book has now at the limit or better, cancel the rest, never rest.
 Fill sizes come from GET /order (size_matched); cost is booked at the limit price, a conservative upper bound.
 """
+import json
 import logging
 import os
 import time
@@ -24,6 +25,7 @@ MAX_TRADE_USD = _f("TK_MAX_TRADE_USD", 10)   # never spend more than this on one
 MAX_DAY_LOSS = _f("TK_MAX_DAY_LOSS", 15)     # stop opening trades after this realised loss today (UTC)
 SLIP = _f("TK_SLIP", 0.01)                   # limit = ask + 1 tick on buys, bid - 1 tick on sells
 STOP_FILE = "runs/STOP"                      # touch it to stop new entries at once (open positions still exit)
+STATUS_FILE = "runs/live.json"               # balance for the dashboard, refreshed every minute
 
 
 def geoblocked():
@@ -36,13 +38,15 @@ class Live:
         self.dry = os.getenv("TK_LIVE_DRY", "0") != "0"
         self.c = ClobClient(HOST, CHAIN, key=os.environ["PM_PRIVATE_KEY"], funder=os.environ["PM_FUNDER"],
                             signature_type=int(os.environ["PM_SIGNATURE_TYPE"]))
-        self.checked = 0.0
+        self.checked = self.published = 0.0
         if not self.dry:
             self.c.set_api_creds(self.c.create_or_derive_api_key())
         self.check(force=True)
 
     def check(self, force=False):
-        """Refuse to trade when geoblocked or closed-only; re-checked every 10 minutes."""
+        """Refuse to trade when geoblocked or closed-only; re-checked every 10 minutes. Balance file every minute."""
+        if force or time.time() - self.published >= 60:
+            self.publish()
         if not force and time.time() - self.checked < 600:
             return
         blocked, g = geoblocked()
@@ -53,6 +57,17 @@ class Live:
                 raise SystemExit("account is in closed-only mode - not trading")
             log.info("live check ok | %s %s | USDC %.2f", g.get("country"), g.get("region"), self.usdc())
         self.checked = time.time()
+
+    def publish(self):
+        self.published = time.time()
+        try:
+            out = {"t": self.published, "mode": "LIVE-DRY" if self.dry else "LIVE",
+                   "usdc": None if self.dry else round(self.usdc(), 2)}
+            with open(STATUS_FILE + ".tmp", "w") as f:
+                json.dump(out, f)
+            os.replace(STATUS_FILE + ".tmp", STATUS_FILE)
+        except Exception as e:  # noqa: BLE001 - display only, never stop trading for it
+            log.warning("balance publish failed: %r", e)
 
     def usdc(self):
         if self.dry:

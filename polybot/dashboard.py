@@ -382,13 +382,23 @@ def latency_state(now):
     }
 
 
+def live_status(now):
+    """The live bot's mode + USDC balance (runs/live.json, written each minute), or None if no live bot runs."""
+    try:
+        s = json.loads((RUNS / "live.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return s if now - s.get("t", 0) < 180 else None
+
+
 def state():
     bots = [bot_state(n, f) for n, f in BOTS]
     feed = sorted((x for b in bots if not b.get("missing") for x in b.pop("feed")), key=lambda x: -x["t"])[:40]
     now = time.time()
     return {"now": now, "test": {"start": SINCE, "end": SINCE + HOURS * 3600}, "bots": bots, "feed": feed,
             "feeds": feeds_state(now), "gap_sec": GAP_SEC,
-            "wallet": wallet_state(), "latency": (L := latency_state(now)), "api_ms": L["clob"]["now"]}
+            "wallet": wallet_state(), "latency": (L := latency_state(now)), "api_ms": L["clob"]["now"],
+            "live": live_status(now)}
 
 
 class H(BaseHTTPRequestHandler):
