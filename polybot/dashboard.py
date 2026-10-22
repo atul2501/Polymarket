@@ -221,7 +221,8 @@ def feeds_state(now):
                       "rate": sum(1 for t, _ in cl if t > now - 10) / 10, "series": cl},
         "polymarket": {"mid": u[1] if u else None, "bid": u[2] if u else None, "ask": u[3] if u else None,
                        "age": now - book.updated.get(m.up_token, 0) if m else None, "rate": rate_p,
-                       "slug": m.slug if m else None, "series": [[round(t, 2), v] for t, v, *_ in upmid]},
+                       "slug": m.slug if m else None, "beat": beat.get(int(m.slug.split("-")[-1])) if m else None,
+                       "series": [[round(t, 2), v] for t, v, *_ in upmid]},
         "tape": tape,
     }
 
@@ -253,12 +254,25 @@ def wallet_round(slug):
 
 settled = {}   # round start -> the wallet's settled round, filled by wallet_history() in the background
 live = {}      # current round start -> the wallet's fills so far, refreshed by wallet_live() every 3 s
+beat = {}      # round start -> Polymarket's own price to beat (Chainlink open), fetched once per round
+
+
+def price_to_beat(start):
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    r = http.get("https://polymarket.com/api/crypto/crypto-price", timeout=10, params={
+        "symbol": "BTC", "eventStartTime": iso(start), "variant": "fiveminute", "endDate": iso(start + 300)}).json()
+    return r.get("openPrice")
 
 
 def wallet_live():
     """Poll the wallet's current round in the background so /api/state never waits on Polymarket."""
     while True:
         cur = int(time.time()) // 300 * 300
+        try:
+            if beat.get(cur) is None:
+                beat[cur] = price_to_beat(cur)
+        except Exception:                      # ponytail: card shows "—" until the next 3 s retry
+            pass
         try:
             live[cur] = wallet_round(f"btc-updown-5m-{cur}")
             for k in [k for k in live if k < cur]:
