@@ -211,8 +211,24 @@ def sampler():
         time.sleep(0.5)
 
 
+def bot_binance(now):
+    """Binance mids the first bot recorded itself (~10/s), for when latmon.py isn't running (e.g. a small server)."""
+    path = RUNS / BOTS[0][1]
+    if not path.exists():
+        return None
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    last = con.execute("SELECT max(rowid) FROM binance").fetchone()[0] or 0
+    pts = con.execute("SELECT t, mid FROM binance WHERE rowid > ? AND t > ? ORDER BY rowid", (last - 1500, now - 120)).fetchall()
+    if not pts:
+        return None
+    step = max(1, len(pts) // 240)
+    return {"price": pts[-1][1], "age": now - pts[-1][0], "rate": sum(1 for t, _ in pts if t > now - 5) / 5,
+            "series": [[round(t, 2), v] for t, v in pts[::step]]}
+
+
 def feeds_state(now):
-    mb = (latmon() or {}).get("binance") or {"price": None, "age": None, "rate": 0, "series": []}
+    mb = ((latmon() or {}).get("binance") or bot_binance(now)
+          or {"price": None, "age": None, "rate": 0, "series": []})
     with cfeed.lock:
         cl = sorted((t, v) for t, v in cfeed.points.get("btc/usd", {}).items() if t > now - 120)
     msgs = feedmeta["msgs"]
