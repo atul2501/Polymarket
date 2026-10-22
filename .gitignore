@@ -4,3 +4,8 @@ __pycache__/
 *.db
 *.log
 polybot/runs/
+
+# live trading keys: never commit
+secrets.env
+.polybot-secrets
+*.secrets

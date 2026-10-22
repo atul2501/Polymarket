@@ -1,4 +1,4 @@
 requests>=2.31
 websockets>=13
 certifi
-# live trading (not in v1): py-clob-client, python-dotenv
+py-clob-client-v2==1.2.1   # live orders (live.py); paper runs never import it

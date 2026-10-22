@@ -14,6 +14,7 @@ the last ~3 s and held to settlement, +2.1c/share as taker). Many entries per ro
 Replay at our speed (0.3 s): 0.5 bp trigger ~0c/share, 3 bp +3.2c over 502 trades (t=1.6, not yet significant).
 
 python taker.py        live paper run (ledger TK_LEDGER, default runs/taker.db); records ticks, Binance and prints
+TK_LIVE=1              REAL orders through live.py (FAK, no paper delay); see live.py for keys and safety limits
 """
 import logging
 import os
@@ -42,6 +43,9 @@ COOLDOWN = _f("TK_COOLDOWN", 10)
 LOOP_SEC = _f("TK_LOOP", 0.05)
 SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown applies per side
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
+LIVE = os.getenv("TK_LIVE", "0") != "0"
+if LIVE:
+    DELAY_SEC = 0.0                          # real orders pay the real network delay, no simulated one
 
 
 def signal(bps):
@@ -56,6 +60,10 @@ def entry_price(book, t_left):
     if t_left < MIN_LEFT or book is None or book.ask is None or not MIN_ASK <= book.ask <= MAX_ASK:
         return None
     return book.ask if book.ask_size >= SIZE else None
+
+
+def token(m, side):
+    return m.up_token if side == "Up" else m.down_token
 
 
 def settler():
@@ -78,17 +86,25 @@ def live():
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
     bn = BinanceFeed().start()
-    pending, pos = None, None                     # pending: (fire_at, market, side); pos: (id, market, side, exit_at)
+    pending, pos = None, None   # pending: (fire_at, market, side); pos: (id, market, side, exit_at, shares, sold_usd)
+    lx = None
+    if LIVE:
+        from live import Live                  # imported only here: paper runs don't need the CLOB client
+        lx = Live()
+    blocked_log = 0.0
     last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_log = time.time(), 0.0, 0.0
     threading.Thread(target=settler, daemon=True).start()
-    log.info("taker start | PAPER | %g bp in %gs -> buy %g @ ask after %.2fs, %s | ask %.2f-%.2f "
-             "| no entry < %gs left | cooldown %gs | ledger %s", MOVE_BPS, MOVE_SEC, SIZE, DELAY_SEC,
+    log.info("taker start | %s | %g bp in %gs -> buy %g @ ask after %.2fs, %s | ask %.2f-%.2f "
+             "| no entry < %gs left | cooldown %gs | ledger %s",
+             ("LIVE-DRY" if lx.dry else "LIVE") if lx else "PAPER", MOVE_BPS, MOVE_SEC, SIZE, DELAY_SEC,
              "hold to settlement" if SETTLE else f"sell at bid after {HOLD_SEC:g}s", MIN_ASK, MAX_ASK, MIN_LEFT,
              COOLDOWN, LEDGER.name)
     while True:
         try:
             now = time.time()
+            if lx:
+                lx.check()                         # geoblock / closed-only, every 10 min; exits if blocked
             if pos and now >= pos[1].end:          # unsold at round end (no bid): the settler books it; stop holding
                 log.info("[BTC 5m] %s position unsold at round end, left to settlement", pos[2])
                 pos = None                         # 22 Oct 18:19: never cleared, froze T-0.3 for 1.5 h
@@ -106,24 +122,41 @@ def live():
                     led.tick(now, m, Snapshot(up, dn, t_left, m.fee, 0.0, None), None, None, None, None)
                     led.binance(now, bn.at(now))
                 if pos and pos[1].slug == m.slug and now >= pos[3]:
-                    pid, _, side, _ = pos
+                    pid, _, side, _, left, got = pos
                     bid = side_book[side].bid
                     if bid is not None:
-                        led.close(pid, bid, taker_fee(bid, 1, m.fee))
-                        pnl = led._one("SELECT pnl FROM trades WHERE id=?", pid)
-                        log.info("[BTC 5m] SELL %s @ %.2f x%g | P/L %+.2f | total %+.2f", side, bid, SIZE, pnl,
-                                 led._one("SELECT coalesce(sum(pnl),0) FROM trades WHERE status!='open'"))
-                        pos = None
+                        sold, px = lx.sell(token(m, side), bid, left) if lx else (left, bid)
+                        left, got = left - sold, got + sold * px
+                        if left >= 0.01:           # live: not (fully) sold yet, retry in 1 s until the round ends
+                            pos = (pid, m, side, now + 1, left, got)
+                        else:
+                            shares = led._one("SELECT shares FROM trades WHERE id=?", pid)
+                            avg = got / shares
+                            led.close(pid, avg, taker_fee(avg, 1, m.fee))
+                            pnl = led._one("SELECT pnl FROM trades WHERE id=?", pid)
+                            log.info("[BTC 5m] SELL %s @ %.2f x%g | P/L %+.2f | total %+.2f", side, avg, shares, pnl,
+                                     led._one("SELECT coalesce(sum(pnl),0) FROM trades WHERE status!='open'"))
+                            pos = None
                 if pending and pending[1].slug == m.slug and now >= pending[0]:
                     _, _, side = pending
                     pending = None
                     if pos is None and (ask := entry_price(side_book[side], t_left)) is not None:
-                        fee = taker_fee(ask, SIZE, m.fee)
-                        pid = led.record(m, "taker", Leg(side, ask, SIZE, fee))
+                        why = lx.blocked_reason(led) if lx else None
+                        if why:
+                            if now - blocked_log > 60:
+                                blocked_log = now
+                                log.warning("[BTC 5m] entry skipped: %s", why)
+                            continue
+                        shares, px = lx.buy(token(m, side), ask, SIZE) if lx else (SIZE, ask)
                         last_entry[side] = now
+                        if shares < 0.01:
+                            log.info("[BTC 5m] BUY %s @ %.2f got no fill", side, px)
+                            continue
+                        fee = taker_fee(px, shares, m.fee)
+                        pid = led.record(m, "taker", Leg(side, px, shares, fee))
                         if not SETTLE:
-                            pos = (pid, m, side, now + HOLD_SEC)
-                        log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, ask, SIZE, fee, t_left)
+                            pos = (pid, m, side, now + HOLD_SEC, shares, 0.0)
+                        log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)
                 if pending is None and pos is None and t_left >= MIN_LEFT:
                     bps = bn.move_bps(MOVE_SEC, now)
                     side = signal(bps)
