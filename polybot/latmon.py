@@ -60,7 +60,7 @@ def snapshot(now):
                     "rate": sum(1 for p in pts if p[0] > now - 5) / 5,
                     "series": [[round(t, 2), v] for t, v in pts[::step]],
                     "lag_p50": pctl(lags, .5), "lag_p95": pctl(lags, .95)},
-        "history": [list(x) for x in lat],
+        "history": [list(x) for x in lat.copy()],      # copy: probe() appends from another thread
     }
 
 

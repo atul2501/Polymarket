@@ -182,6 +182,14 @@ main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; paddin
 
 /* ---------- tables */
 .scroll { overflow-x: auto; }
+.rrbox.open { max-height: 560px; overflow-y: auto; }
+.rrbox thead th { position: sticky; top: 0; background: var(--s1); z-index: 1; }
+.rrbox td { padding-top: 7px; padding-bottom: 7px; }
+.rrbox td small { display: block; font-size: 11px; color: var(--faint); margin-top: 1px; }
+.rrbox tr.tot td { font-weight: 600; background: var(--s2); }
+.rrbox tr.tot td:first-child { padding-left: 10px; border-radius: 8px 0 0 8px; } .rrbox tr.tot td:last-child { padding-right: 10px; border-radius: 0 8px 8px 0; }
+.more { border: 0; background: var(--s2); color: var(--ink-2); font: 600 12px var(--sans); padding: 6px 11px; border-radius: 8px; cursor: pointer; white-space: nowrap; transition: background .2s, color .2s; }
+.more:hover { color: var(--ink); background: var(--accent-bg); }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: right; font: 500 12px var(--sans); color: var(--muted); padding: 0 12px 10px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
 td { text-align: right; padding: 11px 12px; border-bottom: 1px solid var(--hair); white-space: nowrap; font-size: 13px; transition: background .2s; }
@@ -341,9 +349,10 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
     <article class="panel"><div class="scroll"><table>
       <thead><tr><th></th><th style="text-align:left">Bot</th><th>P/L</th><th>Return</th><th>Money in</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Max drawdown</th><th>Trend</th></tr></thead>
       <tbody id="board"></tbody></table></div></article>
-    <div class="g11" style="margin-top:16px">
-      <article class="panel"><div class="ph"><div><h3>Round by round</h3><div class="cap">Copied wallet against each bot, last 8 settled rounds</div></div></div>
-        <div class="scroll"><table><thead id="rhead"></thead><tbody id="rounds"></tbody></table></div></article>
+    <article class="panel rr" style="margin-top:16px"><div class="ph"><div><h3>Round by round</h3><div class="cap">Every settled round of the test, newest first · P/L with $ spent underneath</div></div>
+        <button class="more" id="rrmore" aria-expanded="false" aria-controls="rrbox"></button></div>
+      <div class="scroll rrbox" id="rrbox"><table><thead id="rhead"></thead><tbody id="rounds"></tbody></table></div></article>
+    <div style="margin-top:16px">
       <article class="panel"><div class="ph"><div><h3>Activity</h3><div class="cap">Every paper buy and its result</div></div><div class="filters" id="filters"></div></div>
         <div class="feedlist" id="feed"></div></article>
     </div>
@@ -367,7 +376,7 @@ const $ = id => document.getElementById(id);
 const SLOTS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
 const RULES = { "W-3bp": "Wallet rule · 3 bp move · hold to settle", "W-0.5": "Wallet rule · 0.5 bp move · hold to settle",
   "T-0.3": "Fast taker · 2 bp · sell after 5 s", "T-0.1": "Fast taker · 0.1 s reaction (server estimate)", "T-3bp": "Fast taker · 3 bp · sell after 5 s" };
-let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false, TAPE_TOP = 0;
+let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false, TAPE_TOP = 0, RR_OPEN = false;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const money = v => v == null ? "—" : (v >= 0 ? "+$" : "−$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const usd0 = v => "$" + Math.round(v).toLocaleString();
@@ -516,10 +525,23 @@ function render(d) {
     <td class="num">${b.win_rate == null ? "—" : (b.win_rate * 100).toFixed(1) + "%"}</td><td class="num up">${b.avg_win == null ? "—" : money(b.avg_win)}</td>
     <td class="num down">${b.avg_loss == null ? "—" : money(b.avg_loss)}</td><td class="num down">${b.max_dd ? money(b.max_dd) : "—"}</td>
     <td>${spark(b.series, colorOf(b.name))}</td></tr>`).join("");
-  $("rhead").innerHTML = `<tr><th>Round</th><th>Winner</th><th>Wallet</th>${bots.map(b => `<th>${esc(b.name)}</th>`).join("")}</tr>`;
-  $("rounds").innerHTML = (w.rounds || []).map(r => `<tr><td class="num">${hm(r.start)}</td><td><span class="tag ${r.winner === "Up" ? "up" : "down"}">${r.winner.toUpperCase()}</span></td>
-    <td class="num ${cls(r.pnl)}">${money(r.pnl)}</td>${bots.map(b => { const v = b.by_round[r.start + 300]; return `<td class="num ${cls(v)}">${v == null ? '<span class="muted">—</span>' : money(v)}</td>`; }).join("")}</tr>`).join("")
+  $("rhead").innerHTML = `<tr><th>Round</th><th>Winner</th><th>Wallet</th>${bots.map(b => `<th><span style="color:${colorOf(b.name)}">●</span> ${esc(b.name)}</th>`).join("")}</tr>`;
+  const WR = Object.fromEntries((w.rounds || []).map(r => [r.start, r]));   // rows: every round the wallet or any bot settled
+  const RW = [...new Set([...Object.keys(WR).map(Number), ...bots.flatMap(b => Object.keys(b.by_round).map(e => e - 300))])]
+    .sort((a, b) => b - a).map(s => WR[s] || {start: s});
+  const cell = (p, k) => p == null ? '<td class="num"><span class="muted">—</span></td>'
+    : `<td class="num"><span class="${cls(p)}">${money(p)}</span><small>${k < 100 ? usd2(k) : usd0(k)}</small></td>`;
+  const tot = (f) => RW.reduce((a, r) => { const v = f(r); return v ? [a[0] + v[0], a[1] + v[1], a[2] + 1] : a; }, [0, 0, 0]);
+  const totRow = RW.length ? `<tr class="tot"><td>Total</td><td class="muted">${RW.length} rds</td>${[tot(r => r.fills ? [r.pnl, r.cost] : null), ...bots.map(b => tot(r => b.by_round[r.start + 300]))]
+    .map(([p, k, n]) => n ? cell(p, k) : cell(null)).join("")}</tr>` : "";
+  const shown = RR_OPEN ? RW : RW.slice(0, 8);
+  $("rounds").innerHTML = (totRow + shown.map(r => `<tr><td class="num">${hm(r.start)}</td><td>${r.winner ? `<span class="tag ${r.winner === "Up" ? "up" : "down"}">${r.winner.toUpperCase()}</span>` : '<span class="muted">—</span>'}</td>
+    ${cell(r.fills ? r.pnl : null, r.cost)}${bots.map(b => { const v = b.by_round[r.start + 300]; return v ? cell(v[0], v[1]) : cell(null); }).join("")}</tr>`).join(""))
     || `<tr><td colspan="${3 + bots.length}" class="empty">The first round of the test hasn't settled yet</td></tr>`;
+  $("rrmore").hidden = RW.length <= 8;
+  $("rrmore").textContent = RR_OPEN ? "Show last 8 ▴" : `Show all ${RW.length} rounds ▾`;
+  $("rrmore").setAttribute("aria-expanded", RR_OPEN);
+  $("rrbox").classList.toggle("open", RR_OPEN);
   const names = ["All", ...bots.map(b => b.name)];
   $("filters").innerHTML = names.map(n => `<button class="${n === FILTER ? "on" : ""}" data-f="${esc(n)}">${esc(n)}</button>`).join("");
   document.querySelectorAll("#filters button").forEach(b => b.onclick = () => { FILTER = b.dataset.f; render(LAST); });
@@ -688,6 +710,7 @@ async function tick() {
   catch (e) { $("offline").style.display = "block"; $("status").className = "badge bad"; $("status").innerHTML = '<span class="live-dot"></span>Offline'; }
   finally { BUSY = false; }
 }
+$("rrmore").addEventListener("click", () => { RR_OPEN = !RR_OPEN; tick(); });
 tick(); setInterval(tick, 1000);
 
 let holdT = null;

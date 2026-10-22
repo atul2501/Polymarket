@@ -132,7 +132,7 @@ def live():
                 last_log = now
                 n, pnl = led.db.execute("SELECT count(*), coalesce(sum(pnl),0) FROM trades WHERE status!='open'").fetchone()
                 log.info("taker status | %d trades closed | P/L %+.2f", n, pnl)
-        except (requests.RequestException, ValueError, KeyError) as e:
+        except (requests.RequestException, ValueError, KeyError, sqlite3.Error) as e:   # a locked db killed W-0.5 22 Oct 06:00
             log.warning("api error: %r", e)
         time.sleep(LOOP_SEC)
 

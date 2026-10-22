@@ -164,8 +164,9 @@ def bot_state(name, db_name):
         "ret": cum / cost * 100 if cost else None, "trades": n, "open_n": len(rows) - n,
         "win_rate": len(wins) / n if n else None, "avg_win": sum(wins) / len(wins) if wins else None,
         "avg_loss": sum(losses) / len(losses) if losses else None, "max_dd": round(dd, 2), "series": series,
-        "by_round": {e: round(p, 2) for e, p in con.execute("SELECT window_end, sum(pnl) FROM trades WHERE status!='open'"
-                     " AND window_end > ? GROUP BY window_end ORDER BY window_end DESC LIMIT 12", (SINCE,))},
+        "by_round": {e: [round(p, 2), round(k, 2)] for e, p, k in con.execute(   # every settled round: [P/L, $ spent]
+                     "SELECT window_end, sum(pnl), sum(cost) FROM trades WHERE status!='open' AND window_end > ?"
+                     " GROUP BY window_end", (SINCE,))},
         "open": [{"side": r[1], "price": r[2], "shares": r[3], "cost": r[6]} for r in rows if r[5] == "open"],
         "feed": [{"bot": name, "t": utc(r[0]), "side": r[1], "price": r[2], "shares": r[3], "status": r[5],
                   "pnl": r[4]} for r in rows[-30:]],
@@ -323,7 +324,7 @@ def wallet_state():
     recent = ([[*x, "live"] for x in lv["list"]] if isinstance(lv, dict) and lv.get("list") else []) + \
              [[*x, r["winner"]] for r in reversed(rounds[-2:]) for x in r["list"]]
     return {"live": {k: v for k, v in lv.items() if k != "list"} if isinstance(lv, dict) else None,
-            "live_start": cur, "rounds": [{k: v for k, v in r.items() if k != "list"} for r in rounds[-8:][::-1]],
+            "live_start": cur, "rounds": [{k: v for k, v in r.items() if k != "list"} for r in rounds[::-1]],
             "series": series, "pnl": round(cum, 2), "cost": round(cost, 2), "ret": cum / cost * 100 if cost else None,
             "n": len(rounds), "active": len(active), "won": sum(r["pnl"] > 0 for r in active),
             "avg_pair": sum(pairs) / len(pairs) if pairs else None, "shares": shares,
