@@ -193,6 +193,10 @@ def main():
     bf.pts = [(t0 - 3.2 + i * 0.1, 100.0) for i in range(30)] + [(t0, 100.04)]
     assert round(bf.move_bps(3, t0), 1) == 4.0
 
+    # live: API share amounts in either unit (5 or 5000000 = 5 shares)
+    from live import shares_of
+    assert shares_of("5", 5) == 5 and shares_of("5000000", 5) == 5 and shares_of("4.99", 5) == 4.99 and shares_of(None, 5) == 0
+
     print("ok")
 
 

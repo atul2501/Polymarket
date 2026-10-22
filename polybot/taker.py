@@ -115,6 +115,8 @@ def live():
             last_seen = now
             led.prints([(t, a, p, s, side) for (t, a, p, s, side) in raw])
             for m in markets:
+                if lx:
+                    lx.prepare((m.up_token, m.down_token))   # new round: fetch order metadata now, not at the order
                 up, dn = books[m.up_token], books[m.down_token]
                 t_left = m.seconds_left(now)
                 side_book = {"Up": up, "Down": dn}
