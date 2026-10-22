@@ -7,12 +7,13 @@ Secrets come only from the environment (systemd EnvironmentFile, chmod 600), nev
 TK_LIVE_DRY=1 signs every order but never posts it (fills simulated at the limit price): use it to check keys/setup.
 
 Orders are FAK (fill-and-kill): fill what the book has now at the limit or better, cancel the rest, never rest.
-Fill sizes come from GET /order (size_matched); cost is booked at the limit price, a conservative upper bound.
+Fills (shares and USDC) come from the order response; GET /order only for orders the CLOB delays.
 Nothing slow sits between a signal and its order: market metadata is fetched when a round starts (prepare), the
 USDC balance is cached (refreshed each minute), and the client doesn't wait for on-chain settlement of fills.
 """
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -43,10 +44,10 @@ def geoblocked():
     return bool(g.get("blocked")), g
 
 
-def shares_of(x, size):
-    """Share count from an API amount; guards against 6-decimal fixed-point units (5000000 = 5 shares)."""
+def amount(x, cap):
+    """Shares or USDC from an API amount string; guards against 6-decimal fixed-point units (5000000 = 5)."""
     v = float(x or 0)
-    return v / 1e6 if v > size * 100 else v
+    return v / 1e6 if v > cap * 100 else v
 
 
 class Live:
@@ -139,12 +140,18 @@ class Live:
         return None
 
     def _fak(self, token, side, price, size):
-        """One FAK order; returns (shares matched, limit price). 0 on no fill or any error (text in self.err)."""
+        """One FAK order; returns (shares filled, average price). (0, limit) on no fill or any error (text in self.err).
+
+        Fills come from the response: BUY makingAmount = USDC paid, takingAmount = shares got (a BUY spends
+        size x limit, so a better price buys MORE shares - 22 Oct: 5.137 sh for $3.75 at limit 0.75);
+        SELL makingAmount = shares sold, takingAmount = USDC got.
+        """
         price = round(min(max(price, 0.01), 0.99), 2)
         size = int(size * 100) / 100                       # 2 size decimals, rounded down
         self.err = ""
         if size < 0.01:
             return 0.0, price
+        t0 = time.perf_counter()
         try:
             if self.dry:
                 order = self.c.create_order(OrderArgs(token_id=token, price=price, size=size, side=side))
@@ -155,32 +162,40 @@ class Live:
                                              order_type=OrderType.FAK)
         except Exception as e:  # noqa: BLE001 - a rejected/failed order must never kill the bot
             self.err = repr(e)
+            ms = (time.perf_counter() - t0) * 1000
             if "no orders found to match" in self.err:
-                log.info("order %s x%.2f @ %.2f: no fill (book moved)", side, size, price)
+                log.info("order %s x%.2f @ %.2f: no fill (book moved) | %.0f ms", side, size, price, ms)
             else:
-                log.warning("order %s x%.2f @ %.2f failed: %s", side, size, price, self.err)
+                log.warning("order %s x%.2f @ %.2f failed | %.0f ms: %s", side, size, price, ms, self.err)
             return 0.0, price
-        log.info("order %s x%.2f @ %.2f -> %s", side, size, price,
-                 {k: r.get(k) for k in ("success", "status", "orderID", "makingAmount", "takingAmount", "errorMsg")})
+        ms = (time.perf_counter() - t0) * 1000
+        log.info("order %s x%.2f @ %.2f -> %s | %.0f ms", side, size, price,
+                 {k: r.get(k) for k in ("success", "status", "orderID", "makingAmount", "takingAmount", "errorMsg")}, ms)
         if not r.get("success") or not r.get("orderID"):
             self.err = str(r.get("errorMsg"))
             return 0.0, price
-        got = shares_of(r.get("takingAmount" if side == "BUY" else "makingAmount"), size) \
-            if str(r.get("status", "")).lower() == "matched" else 0.0
-        for _ in range(12):                                # 'delayed' orders match a moment later: wait up to ~3 s
-            try:
-                o = self.c.get_order(r["orderID"]) or {}
-                got = shares_of(o.get("size_matched"), size)
+        usd_key, sh_key = ("makingAmount", "takingAmount") if side == "BUY" else ("takingAmount", "makingAmount")
+        shares = amount(r.get(sh_key), size * 2 / price)
+        usd = amount(r.get(usd_key), size * 2)
+        if not shares and str(r.get("status", "")).lower() in ("delayed", "live"):   # matches a moment later
+            for _ in range(12):
+                time.sleep(0.25)
+                try:
+                    o = self.c.get_order(r["orderID"]) or {}
+                except Exception as e:  # noqa: BLE001
+                    log.warning("order lookup failed: %r", e)
+                    break
+                shares = amount(o.get("size_matched"), size * 2 / price)
                 if str(o.get("status", "")).upper() not in ("LIVE", "DELAYED"):
                     break
-            except Exception as e:  # noqa: BLE001 - keep the response's own amount
-                log.warning("order lookup failed: %r", e)
-                break
-            time.sleep(0.25)
-        return min(got, size), price
+            usd = shares * price                           # limit price: the lookup has no paid amount
+        if not shares:
+            return 0.0, price
+        return shares, (usd / shares if usd else price)
 
     def buy(self, token, ask, size):
-        limit = ask + SLIP
+        limit = round(ask + SLIP, 2)
+        size = max(size, math.ceil(100 / limit) / 100)     # marketable BUYs must be >= $1 (22 Oct: $0.65 rejected)
         if size * limit > MAX_TRADE_USD:
             log.warning("buy %.2f x %.2f = $%.2f over TK_MAX_TRADE_USD %.2f, skipped", size, limit, size * limit, MAX_TRADE_USD)
             return 0.0, limit

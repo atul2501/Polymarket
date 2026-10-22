@@ -194,8 +194,37 @@ def main():
     assert round(bf.move_bps(3, t0), 1) == 4.0
 
     # live: API share amounts in either unit (5 or 5000000 = 5 shares)
-    from live import shares_of
-    assert shares_of("5", 5) == 5 and shares_of("5000000", 5) == 5 and shares_of("4.99", 5) == 4.99 and shares_of(None, 5) == 0
+    from live import amount
+    assert amount("5.136985", 13) == 5.136985 and amount("5000000", 13) == 5 and amount("3.749999", 10) == 3.749999
+    assert amount(None, 5) == 0
+
+    # live fills, from the real responses of 22 Oct 18:07 (fake client, no network)
+    import live as lv
+
+    class FakeClient:
+        def __init__(self, r):
+            self.r = r
+
+        def create_and_post_order(self, *a, **k):
+            if isinstance(self.r, Exception):
+                raise self.r
+            return self.r
+    bot = object.__new__(lv.Live)
+    bot.dry, bot.balance, bot.err = False, 34.6, ""
+    bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0xd3", "makingAmount": "3.749999",
+                        "takingAmount": "5.136985"})
+    sh, px = bot._fak("tok", "BUY", 0.75, 5)
+    assert abs(sh - 5.136985) < 1e-9 and abs(px - 3.749999 / 5.136985) < 1e-9      # more shares, avg 0.73
+    bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0x85", "makingAmount": "5", "takingAmount": "3.85"})
+    sh, px = bot._fak("tok", "SELL", 0.75, 5)
+    assert sh == 5 and abs(px - 0.77) < 1e-9
+    bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0xb9", "makingAmount": "4.349996",
+                        "takingAmount": "5.058135"})
+    assert abs(bot._fak("tok", "BUY", 0.87, 5)[0] - 5.058135) < 1e-9                 # the fill logged as "no fill"
+    bot.c = FakeClient(Exception("no orders found to match with FAK order"))
+    assert bot._fak("tok", "BUY", 0.55, 5)[0] == 0
+    bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0x1", "makingAmount": "1.0", "takingAmount": "7.69"})
+    assert bot.buy("tok", 0.12, 5)[0] == 7.69                                        # $1 minimum: 7.7 sh at 0.13
 
     print("ok")
 
