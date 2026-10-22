@@ -91,6 +91,7 @@ def live():
     if LIVE:
         from live import Live                  # imported only here: paper runs don't need the CLOB client
         lx = Live()
+        lx.bn = bn
     blocked_log = 0.0
     last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_log = time.time(), 0.0, 0.0

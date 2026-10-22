@@ -227,7 +227,8 @@ def bot_binance(now):
 
 
 def feeds_state(now):
-    mb = ((latmon() or {}).get("binance") or bot_binance(now)
+    lm = (latmon() or {}).get("binance") or {}
+    mb = ((lm if lm.get("price") is not None else None) or bot_binance(now)
           or {"price": None, "age": None, "rate": 0, "series": []})
     with cfeed.lock:
         cl = sorted((t, v) for t, v in cfeed.points.get("btc/usd", {}).items() if t > now - 120)
@@ -383,13 +384,15 @@ def latency_state(now):
     hist = [x for x in (m["history"] if m else []) if x[0] > now - 3600]
     recent = [x for x in hist if x[0] > now - 300]
     clob = pctl([x[1] for x in recent], .5)
-    b = m["binance"]["lag_p50"] if m else None
+    b, b95 = (m["binance"]["lag_p50"], m["binance"]["lag_p95"]) if m else (None, None)
+    if b is None and (lv := live_status(now)) and lv.get("binance_lag"):   # latmon without its stream: the bot's own
+        b, b95 = lv["binance_lag"]
     return {
         "monitor": m is not None,
         "clob": {"now": hist[-1][1] if hist else None, "p50": clob, "p95": pctl([x[1] for x in recent], .95)},
         "gamma": {"now": hist[-1][2] if hist else None, "p50": pctl([x[2] for x in recent], .5)},
         "binance_rest": {"now": hist[-1][3] if hist else None, "p50": pctl([x[3] for x in recent], .5)},
-        "binance_stream": {"p50": b, "p95": m["binance"]["lag_p95"] if m else None},
+        "binance_stream": {"p50": b, "p95": b95},
         "book_stream": {"p50": pctl(pl, .5), "p95": pctl(pl, .95)},
         "chainlink_age": (now - cl_t) * 1000 if cl_t else None,
         "offset": m["offset"] if m else None,

@@ -39,6 +39,7 @@ class Live:
         self.c = ClobClient(HOST, CHAIN, key=os.environ["PM_PRIVATE_KEY"], funder=os.environ["PM_FUNDER"],
                             signature_type=int(os.environ["PM_SIGNATURE_TYPE"]))
         self.checked = self.published = 0.0
+        self.bn = None                                # taker.py sets its BinanceFeed here
         if not self.dry:
             self.c.set_api_creds(self.c.create_or_derive_api_key())
         self.check(force=True)
@@ -63,6 +64,10 @@ class Live:
         try:
             out = {"t": self.published, "mode": "LIVE-DRY" if self.dry else "LIVE",
                    "usdc": None if self.dry else round(self.usdc(), 2)}
+            if self.bn:                                   # the bot's own Binance delay, for the dashboard
+                with self.bn.lock:
+                    lags = sorted(l for t, l in self.bn.lags if t > self.published - 60)
+                out["binance_lag"] = [lags[len(lags) // 2], lags[int(len(lags) * .95)]] if lags else None
             with open(STATUS_FILE + ".tmp", "w") as f:
                 json.dump(out, f)
             os.replace(STATUS_FILE + ".tmp", STATUS_FILE)

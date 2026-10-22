@@ -64,8 +64,11 @@ def snapshot(now):
     }
 
 
+STREAM = os.getenv("LATMON_STREAM", "1") != "0"   # 0: round trips only, no Binance stream (~0 CPU, small servers)
+
 if __name__ == "__main__":
-    bfeed.start()
+    if STREAM:
+        bfeed.start()
     threading.Thread(target=probe, daemon=True).start()
     tmp = OUT.with_suffix(".tmp")
     while True:
