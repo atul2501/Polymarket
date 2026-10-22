@@ -192,41 +192,51 @@ class BookFeed:
 
 
 class BinanceFeed:
-    """Binance BTC/USDT best bid/ask mid, futures first (most updates), spot as fallback; last ~15 s kept."""
+    """Binance futures BTC/USDT best bid/ask mid over SOCKETS hedged connections; last ~15 s kept.
+
+    Each update has an id (u): the first copy to arrive wins and older ids are dropped, so a slow or reconnecting
+    socket never stalls the feed. Futures only: spot trades ~$40 apart, mixing the two would fake bp moves.
+    """
+    SOCKETS = 1                # 2 tested 22 Oct 16:10: both lag together (the home link is the bottleneck), no gain
+    BEHIND_MS = 3000           # a socket this far behind Binance's event time is replaced
 
     def __init__(self):
         self.pts = []          # (unix time, mid)
         self.lock = threading.Lock()
         self.lags = collections.deque(maxlen=4000)  # (local time, ms between Binance's event time E and arrival)
+        self.last_u = 0        # newest update id accepted
+        self.won = collections.Counter()            # socket -> updates it delivered first
 
     def start(self):
         _thread(self._run)
         return self
 
     async def _run(self):
-        i = 0
+        await asyncio.gather(*(self._socket(k) for k in range(self.SOCKETS)))
+
+    async def _socket(self, k):
+        await asyncio.sleep(k * 2)                  # stagger so both are never fresh (or stale) together
         while True:
-            url = BINANCE_WS[i % len(BINANCE_WS)]
             try:
-                async with websockets.connect(url, ssl=CTX, open_timeout=10, ping_interval=20) as ws:
-                    t0 = time.time()
+                async with websockets.connect(BINANCE_WS[0], ssl=CTX, open_timeout=10, ping_interval=20) as ws:
                     while True:
                         d = json.loads(await asyncio.wait_for(ws.recv(), 10))  # silent 10 s -> reconnect
-                        mid = (float(d["b"]) + float(d["a"])) / 2
                         now = time.time()
-                        if i % 2 and now - t0 > 60:   # on spot (no event time, fewer updates): retry futures each minute
+                        if now * 1000 - d["E"] > self.BEHIND_MS:
+                            log.warning("binance socket %d %.1fs behind, reconnecting", k, now - d["E"] / 1000)
                             break
                         with self.lock:
-                            self.pts.append((now, mid))
-                            if d.get("E"):
-                                self.lags.append((now, now * 1000 - d["E"]))
+                            if d["u"] <= self.last_u:          # the other socket already delivered this update
+                                continue
+                            self.last_u = d["u"]
+                            self.won[k] += 1
+                            self.pts.append((now, (float(d["b"]) + float(d["a"])) / 2))
+                            self.lags.append((now, now * 1000 - d["E"]))
                             if len(self.pts) > 6000:
                                 cut = now - 15
                                 self.pts = [x for x in self.pts if x[0] >= cut]
-                i = 0
-            except Exception as e:  # ponytail: alternate futures/spot on any error; no backoff growth
-                log.warning("binance socket (%s): %r, reconnecting", url.split("/")[2], e)
-                i += 1
+            except Exception as e:  # ponytail: fixed 1 s retry, no backoff growth
+                log.warning("binance socket %d: %r, reconnecting", k, e)
                 await asyncio.sleep(1)
 
     def at(self, t, max_age=2):
@@ -247,5 +257,7 @@ class BinanceFeed:
     def move_bps(self, window, now=None):
         """Mid change over the last `window` seconds in basis points, or None."""
         now = now or time.time()
-        a, b = self.at(now - window, max_age=window + 2), self.at(now)
+        # start point must be from ~window ago, not before a data gap: max_age=window+2 let a 3 s move span an 8 s
+        # reconnect gap, so the bot bought moves Polymarket had already priced (22 Oct: -$1.02/buy vs +$0.76 otherwise)
+        a, b = self.at(now - window, max_age=1), self.at(now)
         return (b / a - 1) * 1e4 if a and b else None

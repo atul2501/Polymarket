@@ -70,6 +70,7 @@ class Tracker:
     def __init__(self, path):
         self.path, self.log = path, path.with_suffix(".log")
         self.t_last = self.b_last = SINCE
+        self.rid = {"ticks": 0, "binance": 0}           # last rowid read: rows go in time order, rowid is indexed
         self.ticks = self.bn = self.gaps = self.bn_gaps = 0
         self.max_gap = self.bn_max_gap = 0.0
         self.miss = self.bn_miss = 0.0                 # seconds not covered: interval time beyond 1 s
@@ -79,7 +80,10 @@ class Tracker:
     def _scan(self, con, table, last):
         n = gaps = 0
         worst = miss = 0.0
-        for (t,) in con.execute(f"SELECT t FROM {table} WHERE t > ? ORDER BY t", (last,)):
+        for rid, t in con.execute(f"SELECT rowid, t FROM {table} WHERE rowid > ? ORDER BY rowid", (self.rid[table],)):
+            self.rid[table] = rid                      # 'WHERE t > ?' scanned the whole 100 MB table: 2.7 s per bot per refresh
+            if t <= last:
+                continue
             d = t - last
             if d > GAP_SEC:
                 gaps += 1

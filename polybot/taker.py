@@ -89,6 +89,9 @@ def live():
     while True:
         try:
             now = time.time()
+            if pos and now >= pos[1].end:          # unsold at round end (no bid): the settler books it; stop holding
+                log.info("[BTC 5m] %s position unsold at round end, left to settlement", pos[2])
+                pos = None                         # 22 Oct 18:19: never cleared, froze T-0.3 for 1.5 h
             markets = feed.current(now)
             books = feed.books(markets)
             raw = ws.trades_since(last_seen)

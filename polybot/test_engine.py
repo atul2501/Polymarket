@@ -185,6 +185,14 @@ def main():
     assert taker.entry_price(Book(0.97, 50, 0.98, 40), 120) is None         # ask above MAX_ASK
     assert taker.entry_price(Book(0.49, 50, 0.50, 40), 20) is None          # last 30 s
 
+    # Binance move: never measured across a data gap (reconnect), only over continuous data
+    from feeds import BinanceFeed
+    bf, t0 = BinanceFeed(), 1000.0
+    bf.pts = [(t0 - 9, 100.0), (t0 - 8.5, 100.0)] + [(t0 - 0.2 + i * 0.05, 100.05) for i in range(4)]
+    assert bf.move_bps(3, t0) is None
+    bf.pts = [(t0 - 3.2 + i * 0.1, 100.0) for i in range(30)] + [(t0, 100.04)]
+    assert round(bf.move_bps(3, t0), 1) == 4.0
+
     print("ok")
 
 
