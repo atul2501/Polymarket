@@ -6,6 +6,8 @@ legs. Same entry rules as taker.py (cooldown, no entry in the last MIN_LEFT seco
 
 python latency_sweep.py runs/live-t01.db [more.db ...] [--since 2026-10-23T15:00] [--delays 0.1,0.3,0.5,0.8]
                                           [--bps 2] [--sec 1] [--hold 5] [--size 5] [--band 0.05,0.95]
+--pad X    the order's limit is the ask seen at signal time + X (live: TK_SLIP 0.01); it fills only if the ask at
+           arrival is within it, else it is killed (still uses the cooldown). Default: always fills.
 --settle   hold to settlement instead of selling (W-3bp style): pays 1 per share if the side wins, else 0, fee on
            the buy only; the cooldown then applies per side, not across both. A round counts only if its last
            recorded tick is within 10 s of the end. W-3bp: --bps 3 --sec 3 --settle --cooldown 2 --band 0.15,0.85
@@ -45,7 +47,7 @@ def replay(bn, ticks, delay, a):
         by_slug[r[1]][0].append(r[0])
         by_slug[r[1]][1].append(r)
     fee = config.DEFAULT_FEE
-    out, last_entry = [], {True: -1e9, False: -1e9}
+    out, misses, last_entry = [], [0], {True: -1e9, False: -1e9}
     for t, mid in bn:
         i = bisect.bisect_right(bt, t - a.sec) - 1
         if i < 0 or t - a.sec - bt[i] > GAP:
@@ -71,6 +73,12 @@ def replay(bn, ticks, delay, a):
         if ask is None or not a.lo <= ask <= a.hi or (size or 0) < a.size:
             continue
         last_entry[up] = t + delay
+        if a.pad is not None:
+            seen = at_or_after(times, rows, t)               # the book the bot saw when it fired
+            sig_ask = None if not seen else (seen[4] if up else seen[7])
+            if sig_ask is not None and ask > sig_ask + a.pad + 1e-9:
+                misses[0] += 1                               # price ran away: FAK killed, no trade
+                continue
         if a.settle:
             end = rows[-1]                                    # the round's last recorded tick decides the winner
             if end[2] > 10 or end[3] is None:
@@ -85,7 +93,7 @@ def replay(bn, ticks, delay, a):
             continue
         pnl = (bid - ask) * a.size - taker_fee(ask, a.size, fee) - taker_fee(bid, a.size, fee)
         out.append((t, ask, bid, pnl))
-    return out
+    return out, misses[0]
 
 
 def main():
@@ -101,6 +109,7 @@ def main():
     p.add_argument("--min-left", type=float, default=30, dest="min_left")
     p.add_argument("--band", default="0.05,0.95")
     p.add_argument("--settle", action="store_true")
+    p.add_argument("--pad", type=float, default=None)
     a = p.parse_args()
     a.lo, a.hi = (float(x) for x in a.band.split(","))
     data = [load(d, a.since) for d in a.dbs]
@@ -108,14 +117,16 @@ def main():
     print(f"{len(a.dbs)} db(s), {hours:.1f} h of data | {a.bps:g} bp in {a.sec:g}s, size {a.size:g}, "
           f"ask {a.lo}-{a.hi}, cooldown {a.cooldown:g}s{' per side' if a.settle else ''}, "
           f"{'hold to settlement' if a.settle else f'sell after {a.hold:g}s'}\n")
-    print(f"{'delay':>6} {'trades':>7} {'win%':>5} {'c/share':>8} {'total $':>8} {'$/hour':>7}")
+    print(f"{'delay':>6} {'trades':>7} {'fill%':>6} {'win%':>5} {'c/share':>8} {'total $':>8} {'$/hour':>7}")
     for d in (float(x) for x in a.delays.split(",")):
-        rows = [r for bn, ticks in data for r in replay(bn, ticks, d, a)]
+        res = [replay(bn, ticks, d, a) for bn, ticks in data]
+        rows, miss = [r for out, _ in res for r in out], sum(m for _, m in res)
         if not rows:
             print(f"{d:6.2f}      0")
             continue
         pnl = sum(r[3] for r in rows)
-        print(f"{d:6.2f} {len(rows):7d} {100 * sum(r[3] > 0 for r in rows) / len(rows):5.0f} "
+        print(f"{d:6.2f} {len(rows):7d} {100 * len(rows) / (len(rows) + miss):6.0f} "
+              f"{100 * sum(r[3] > 0 for r in rows) / len(rows):5.0f} "
               f"{100 * pnl / (len(rows) * a.size):8.2f} {pnl:8.2f} {pnl / hours if hours else 0:7.2f}")
 
 
