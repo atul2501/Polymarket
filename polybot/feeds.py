@@ -198,7 +198,10 @@ class BinanceFeed:
     Each update has an id (u): the first copy to arrive wins and older ids are dropped, so a slow or reconnecting
     socket never stalls the feed. Futures only: spot trades ~$40 apart, mixing the two would fake bp moves.
     """
-    SOCKETS = 1                # 2 tested 22 Oct 16:10: both lag together (the home link is the bottleneck), no gain
+    # Parallel connections, first copy of each update wins. 2 tested 22 Oct 16:10 from a HOME link: both lagged
+    # together, no gain. On the server the Stockholm-Tokyo path loses packets (a lost packet stalls one TCP stream
+    # for >= 1 RTT = 230 ms): BN_SOCKETS=2 hedges that. Compare "late updates dropped" per 5 min with 1 vs 2.
+    SOCKETS = int(os.getenv("BN_SOCKETS", 1))
     BEHIND_MS = 3000           # a socket this far behind Binance's event time is replaced
     MAX_LAG_MS = float(os.getenv("BN_MAX_LAG_MS", 600))   # an update later than this is dropped, never traded on:
     # after a 1-3 s stall the late burst looks like a sudden move, but Polymarket priced it long ago (23 Oct: the
