@@ -6,7 +6,10 @@
   post (no fill) a FAK BUY of 100 shares at 0.01 ($1 max) on a token whose ask is far above that, so it cannot
                  match: this is the real POST /order path including the matching engine. Opt-in with --post.
 
-~/.venv/bin/python order_timing.py [--post]      keys from the environment, as for live.py (source ~/.polybot-secrets)
+  --maker        a resting post-only order (100 shares at 0.01, never fills) and its cancel, each timed: do resting
+                 orders skip the delay a taker order pays?
+
+~/.venv/bin/python order_timing.py [--post] [--maker]   keys from the environment (source ~/.polybot-secrets)
 """
 import os
 import statistics
@@ -14,7 +17,7 @@ import sys
 import time
 
 import requests
-from py_clob_client_v2 import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
+from py_clob_client_v2 import AssetType, BalanceAllowanceParams, OrderArgs, OrderPayload, OrderType
 
 import live
 from market import MarketFeed
@@ -76,6 +79,30 @@ def main():
             time.sleep(idle)
             x, _ = ms(post)
             print(f"POST after {idle:2d} s idle   {x:6.0f} ms")
+    if "--maker" in sys.argv:
+        # A resting post-only BUY of 100 shares at 0.01 ($1) far below the bid: it rests, cannot take, and is cancelled
+        # at once. If a taker order carries a matching delay and a resting one doesn't, the gap shows here.
+        rest = OrderArgs(token_id=tok, price=0.01, size=100, side="BUY")
+        posts, cancels = [], []
+        for _ in range(6):
+            oid = None
+            try:
+                t = time.perf_counter()
+                r = c.create_and_post_order(rest, order_type=OrderType.GTC, post_only=True)
+                posts.append((time.perf_counter() - t) * 1000)
+                oid = (r or {}).get("orderID")
+            except Exception as e:  # noqa: BLE001
+                print("maker post failed:", repr(e)[:120])
+            finally:
+                if oid:
+                    t = time.perf_counter()
+                    c.cancel_order(OrderPayload(orderID=oid))
+                    cancels.append((time.perf_counter() - t) * 1000)
+            time.sleep(0.5)
+        for name, xs in (("POST resting (post-only)", posts), ("CANCEL resting", cancels)):
+            if xs:
+                xs.sort()
+                print(f"{name:24} median {statistics.median(xs):6.0f} ms | min {xs[0]:5.0f} | max {xs[-1]:5.0f}")
 
 
 if __name__ == "__main__":
