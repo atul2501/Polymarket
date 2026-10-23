@@ -30,6 +30,7 @@ MAX_DAY_LOSS = _f("TK_MAX_DAY_LOSS", 15)     # stop opening trades after this re
 KEEPALIVE = _f("TK_KEEPALIVE", 0)            # seconds between warm-up requests, 0 = off (an order after 45 s of quiet took 374-911 ms vs ~215)
 KEEPALIVE_KIND = os.getenv("TK_KEEPALIVE_KIND", "auth")   # "auth" reaches Polymarket's servers, "time" only the edge
 SLIP = _f("TK_SLIP", 0.01)                   # limit = ask + 1 tick on buys, bid - 1 tick on sells
+LOSS_SINCE = os.getenv("TK_LOSS_SINCE", "")   # ISO time (UTC): the loss cap counts only trades from then on (a reset)
 STOP_FILE = "runs/STOP"                      # touch it to stop new entries at once (open positions still exit)
 STATUS_FILE = "runs/live.json"               # balance for the dashboard, refreshed every minute
 
@@ -153,9 +154,10 @@ class Live:
         if os.path.exists(STOP_FILE):
             return "STOP file present"
         day = time.strftime("%Y-%m-%d", time.gmtime())
-        lost = led._one("SELECT coalesce(sum(pnl), 0) FROM trades WHERE mode='live' AND status!='open' AND ts >= ?", day)
+        since = max(day, LOSS_SINCE)                  # ISO strings compare in time order
+        lost = led._one("SELECT coalesce(sum(pnl), 0) FROM trades WHERE mode='live' AND status!='open' AND ts >= ?", since)
         if lost <= -MAX_DAY_LOSS:
-            return f"daily loss limit hit ({lost:+.2f} <= -{MAX_DAY_LOSS:g})"
+            return f"loss limit hit since {since} ({lost:+.2f} <= -{MAX_DAY_LOSS:g})"
         return None
 
     def _fak(self, token, side, price, size):
