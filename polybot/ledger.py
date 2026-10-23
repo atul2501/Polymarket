@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS binance(t REAL, mid REAL);
 CREATE TABLE IF NOT EXISTS ticks(
     t REAL, slug TEXT, window_end INTEGER, t_left REAL, up_bid REAL, up_ask REAL, up_ask_size REAL,
     dn_bid REAL, dn_ask REAL, dn_ask_size REAL, spot REAL, beat REAL, known REAL, sigma REAL, p_model REAL);
+CREATE TABLE IF NOT EXISTS signals(
+    t REAL, slug TEXT, side TEXT, bps REAL, sig_ask REAL, sig_bid REAL, sig_size REAL, t_left REAL,
+    outcome TEXT, reason TEXT, ms_to_order REAL, ms_order REAL, ask_now REAL, fill_px REAL, loop_ms REAL);
 """
 
 
@@ -72,6 +75,15 @@ class Ledger:
         self.db.execute("INSERT INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (now, m.slug, m.end, s.t_left, s.up.bid, s.up.ask, s.up.ask_size, s.down.bid, s.down.ask,
                          s.down.ask_size, spot, beat, known, sigma, s.p_up))
+        self.db.commit()
+
+    def signal(self, t, slug="", side="", bps=None, sig_ask=None, sig_bid=None, sig_size=None, t_left=None,
+               outcome="", reason="", ms_to_order=None, ms_order=None, ask_now=None, fill_px=None, loop_ms=None):
+        """One row per Binance signal and what became of it (bought / nofill / skip + reason), plus slow loop passes.
+        ms_to_order = signal -> order sent, ms_order = the order call itself (post to response)."""
+        self.db.execute("INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (t, slug, side, bps, sig_ask, sig_bid, sig_size, t_left, outcome, reason, ms_to_order,
+                         ms_order, ask_now, fill_px, loop_ms))
         self.db.commit()
 
     def binance(self, t, mid):

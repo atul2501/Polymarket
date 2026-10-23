@@ -41,6 +41,7 @@ MIN_ASK, MAX_ASK = _f("TK_MIN_ASK", 0.05), _f("TK_MAX_ASK", 0.95)
 MIN_LEFT = _f("TK_MIN_LEFT", 30)         # no entries in the last 30 s
 COOLDOWN = _f("TK_COOLDOWN", 10)
 LOOP_SEC = _f("TK_LOOP", 0.05)
+SLOW_LOOP_MS = _f("TK_SLOW_LOOP_MS", 250)   # a loop pass longer than this is written to the signals table
 SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown applies per side
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
@@ -62,6 +63,17 @@ def entry_price(book, t_left):
     return book.ask if book.ask_size >= SIZE else None
 
 
+def entry_block(book, t_left):
+    """Why entry_price() refused: a short reason for the signals table."""
+    if t_left < MIN_LEFT:
+        return "late"
+    if book is None or book.ask is None:
+        return "no_ask"
+    if not MIN_ASK <= book.ask <= MAX_ASK:
+        return "ask_band"
+    return "ask_size"
+
+
 def token(m, side):
     return m.up_token if side == "Up" else m.down_token
 
@@ -81,7 +93,9 @@ def settler():
 
 
 def live():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname).1s %(message)s", datefmt="%H:%M:%S")
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname).1s %(message)s", datefmt="%H:%M:%S",
+                        handlers=[logging.StreamHandler(), logging.FileHandler(LEDGER.with_suffix(".log"))])   # dashboard tails it
     http = requests.Session()
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
@@ -95,6 +109,25 @@ def live():
     blocked_log = 0.0
     last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_log = time.time(), 0.0, 0.0
+    sig, skipped = None, {}   # sig: the pending signal (t, row of book values at signal time); skipped: dedupe times
+
+    def context(now, m, side, bps, t_left):
+        b = side_book_of(m, side)
+        return {"t": now, "row": dict(slug=m.slug, side=side, bps=bps, sig_ask=b.ask, sig_bid=b.bid,
+                                      sig_size=b.ask_size, t_left=t_left)}
+
+    def side_book_of(m, side):
+        return books[m.up_token if side == "Up" else m.down_token]
+
+    def note(ctx, outcome, reason="", dedupe=False, **kw):
+        """Write a signals row. dedupe: at most one per reason and side a second (a move lasts many loop passes)."""
+        if dedupe:
+            key = (reason, ctx["row"]["side"])
+            if time.time() - skipped.get(key, 0) < 1:
+                return
+            skipped[key] = time.time()
+        led.signal(ctx["t"], **{**ctx["row"], **kw}, outcome=outcome, reason=reason)
+
     threading.Thread(target=settler, daemon=True).start()
     log.info("taker start | %s | %g bp in %gs -> buy %g @ ask after %.2fs, %s | ask %.2f-%.2f "
              "| no entry < %gs left | cooldown %gs | ledger %s",
@@ -146,31 +179,47 @@ def live():
                     if pos is None and (ask := entry_price(side_book[side], t_left)) is not None:
                         why = lx.blocked_reason(led) if lx else None
                         if why:
+                            note(sig, "skip", f"blocked: {why}", dedupe=True, t_left=t_left)
                             if now - blocked_log > 60:
                                 blocked_log = now
                                 log.warning("[BTC 5m] entry skipped: %s", why)
                             continue
+                        t_order = time.time()
                         shares, px = lx.buy(token(m, side), ask, SIZE) if lx else (SIZE, ask)
                         last_entry[side] = now
+                        timing = dict(ms_to_order=((lx.t_post or t_order) - sig["t"]) * 1000 if lx else DELAY_SEC * 1000,
+                                      ms_order=lx.ms if lx else None, ask_now=ask, t_left=t_left)
                         if shares < 0.01:
+                            note(sig, "nofill", (lx.err[:80] if lx and lx.err else "no_fill"), **timing)
                             log.info("[BTC 5m] BUY %s @ %.2f got no fill", side, px)
                             continue
+                        note(sig, "bought", fill_px=px, **timing)
                         fee = taker_fee(px, shares, m.fee)
                         pid = led.record(m, "taker", Leg(side, px, shares, fee))
                         if not SETTLE:
                             pos = (pid, m, side, now + HOLD_SEC, shares, 0.0)
                         log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)
-                if pending is None and pos is None and t_left >= MIN_LEFT:
-                    bps = bn.move_bps(MOVE_SEC, now)
-                    side = signal(bps)
-                    if side and now - (last_entry[side] if SETTLE else max(last_entry.values())) >= COOLDOWN:
-                        pending = (now + DELAY_SEC, m, side)
+                    else:
+                        note(sig, "skip", "pos_busy" if pos else entry_block(side_book[side], t_left), t_left=t_left)
+                bps = bn.move_bps(MOVE_SEC, now) if t_left >= MIN_LEFT else None
+                side = signal(bps)
+                if side:
+                    ctx = context(now, m, side, bps, t_left)
+                    if pending is not None or pos is not None:
+                        note(ctx, "skip", "busy", dedupe=True)
+                    elif now - (last_entry[side] if SETTLE else max(last_entry.values())) < COOLDOWN:
+                        note(ctx, "skip", "cooldown", dedupe=True)
+                    else:
+                        pending, sig = (now + DELAY_SEC, m, side), ctx
                         log.info("[BTC 5m] SIGNAL Binance %+.1f bp in %gs -> %s (UP %s/%s)", bps, MOVE_SEC, side,
                                  up.bid, up.ask)
             if now - last_log >= 300:
                 last_log = now
                 n, pnl = led.db.execute("SELECT count(*), coalesce(sum(pnl),0) FROM trades WHERE status!='open'").fetchone()
                 log.info("taker status | %d trades closed | P/L %+.2f", n, pnl)
+            if (loop_ms := (time.time() - now) * 1000) > SLOW_LOOP_MS:   # a blocking call in the loop = missed signals
+                led.signal(now, outcome="slowloop", reason="loop", loop_ms=loop_ms)
+                log.warning("slow loop pass: %.0f ms", loop_ms)
         except (requests.RequestException, ValueError, KeyError, sqlite3.Error) as e:   # a locked db killed W-0.5 22 Oct 06:00
             log.warning("api error: %r", e)
         time.sleep(LOOP_SEC)

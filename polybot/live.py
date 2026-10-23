@@ -59,6 +59,7 @@ class Live:
         self.balance = None                           # cached USDC, refreshed every minute, minus our own buys
         self.bn = None                                # taker.py sets its BinanceFeed here
         self.ready, self.err = set(), ""              # tokens with metadata cached; last order error text
+        self.t_post, self.ms = 0.0, 0.0               # last order: when it was sent (epoch) and how long the call took
         if not self.dry:
             self.c.set_api_creds(self.c.create_or_derive_api_key())
         self.check(force=True)
@@ -152,6 +153,7 @@ class Live:
         if size < 0.01:
             return 0.0, price
         t0 = time.perf_counter()
+        self.t_post = time.time()
         try:
             if self.dry:
                 order = self.c.create_order(OrderArgs(token_id=token, price=price, size=size, side=side))
@@ -162,13 +164,13 @@ class Live:
                                              order_type=OrderType.FAK)
         except Exception as e:  # noqa: BLE001 - a rejected/failed order must never kill the bot
             self.err = repr(e)
-            ms = (time.perf_counter() - t0) * 1000
+            ms = self.ms = (time.perf_counter() - t0) * 1000
             if "no orders found to match" in self.err:
                 log.info("order %s x%.2f @ %.2f: no fill (book moved) | %.0f ms", side, size, price, ms)
             else:
                 log.warning("order %s x%.2f @ %.2f failed | %.0f ms: %s", side, size, price, ms, self.err)
             return 0.0, price
-        ms = (time.perf_counter() - t0) * 1000
+        ms = self.ms = (time.perf_counter() - t0) * 1000
         log.info("order %s x%.2f @ %.2f -> %s | %.0f ms", side, size, price,
                  {k: r.get(k) for k in ("success", "status", "orderID", "makingAmount", "takingAmount", "errorMsg")}, ms)
         if not r.get("success") or not r.get("orderID"):
@@ -196,13 +198,17 @@ class Live:
     def buy(self, token, ask, size):
         limit = round(ask + SLIP, 2)
         size = max(size, math.ceil(100 / limit) / 100)     # marketable BUYs must be >= $1 (22 Oct: $0.65 rejected)
+        self.err, self.ms, self.t_post = "", 0.0, 0.0      # why a buy returns 0 without an order shows in the signals table
         if size * limit > MAX_TRADE_USD:
             log.warning("buy %.2f x %.2f = $%.2f over TK_MAX_TRADE_USD %.2f, skipped", size, limit, size * limit, MAX_TRADE_USD)
+            self.err = "over_max_trade_usd"
             return 0.0, limit
         if size < 5:                                       # Polymarket min order size (orderMinSize) is 5 shares
+            self.err = "under_min_size"
             return 0.0, limit
         if not self.dry and (self.balance is None or self.balance < size * limit * 1.05):
             log.warning("not enough USDC (cached %s) for %.2f x %.2f", self.balance, size, limit)
+            self.err = "low_balance"
             return 0.0, limit
         got, px = self._fak(token, "BUY", limit, size)
         if got and self.balance is not None:
