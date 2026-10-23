@@ -114,7 +114,7 @@ def live():
     def context(now, m, side, bps, t_left):
         b = side_book_of(m, side)
         return {"t": now, "row": dict(slug=m.slug, side=side, bps=bps, sig_ask=b.ask, sig_bid=b.bid,
-                                      sig_size=b.ask_size, t_left=t_left)}
+                                      sig_size=b.ask_size, t_left=t_left, bn_lag=bn.lag_ms())}
 
     def side_book_of(m, side):
         return books[m.up_token if side == "Up" else m.down_token]
@@ -216,7 +216,8 @@ def live():
             if now - last_log >= 300:
                 last_log = now
                 n, pnl = led.db.execute("SELECT count(*), coalesce(sum(pnl),0) FROM trades WHERE status!='open'").fetchone()
-                log.info("taker status | %d trades closed | P/L %+.2f", n, pnl)
+                log.info("taker status | %d trades closed | P/L %+.2f | binance lag %s ms, %d late updates dropped", n, pnl,
+                         "?" if bn.lag_ms() is None else f"{bn.lag_ms():.0f}", bn.stale)
             if (loop_ms := (time.time() - now) * 1000) > SLOW_LOOP_MS:   # a blocking call in the loop = missed signals
                 led.signal(now, outcome="slowloop", reason="loop", loop_ms=loop_ms)
                 log.warning("slow loop pass: %.0f ms", loop_ms)

@@ -6,6 +6,7 @@ import asyncio
 import collections
 import json
 import logging
+import os
 import ssl
 import threading
 import time
@@ -199,6 +200,9 @@ class BinanceFeed:
     """
     SOCKETS = 1                # 2 tested 22 Oct 16:10: both lag together (the home link is the bottleneck), no gain
     BEHIND_MS = 3000           # a socket this far behind Binance's event time is replaced
+    MAX_LAG_MS = float(os.getenv("BN_MAX_LAG_MS", 600))   # an update later than this is dropped, never traded on:
+    # after a 1-3 s stall the late burst looks like a sudden move, but Polymarket priced it long ago (23 Oct: the
+    # feed stalls every 3-6 min from Stockholm; median lag 130 ms, p95 ~210 ms, so 600 ms only cuts stalls)
 
     def __init__(self):
         self.pts = []          # (unix time, mid)
@@ -206,6 +210,7 @@ class BinanceFeed:
         self.lags = collections.deque(maxlen=4000)  # (local time, ms between Binance's event time E and arrival)
         self.last_u = 0        # newest update id accepted
         self.won = collections.Counter()            # socket -> updates it delivered first
+        self.stale = 0                              # updates dropped for arriving later than MAX_LAG_MS
 
     def start(self):
         _thread(self._run)
@@ -225,6 +230,9 @@ class BinanceFeed:
                         if now * 1000 - d["E"] > self.BEHIND_MS:
                             log.warning("binance socket %d %.1fs behind, reconnecting", k, now - d["E"] / 1000)
                             break
+                        if now * 1000 - d["E"] > self.MAX_LAG_MS:
+                            self.stale += 1
+                            continue
                         with self.lock:
                             if d["u"] <= self.last_u:          # the other socket already delivered this update
                                 continue
@@ -238,6 +246,11 @@ class BinanceFeed:
             except Exception as e:  # ponytail: fixed 1 s retry, no backoff growth
                 log.warning("binance socket %d: %r, reconnecting", k, e)
                 await asyncio.sleep(1)
+
+    def lag_ms(self):
+        """Delay of the newest update we accepted (Binance event time to arrival), or None."""
+        with self.lock:
+            return self.lags[-1][1] if self.lags else None
 
     def at(self, t, max_age=2):
         """Mid at time t (latest point at or before t), or None."""

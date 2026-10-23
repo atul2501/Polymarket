@@ -48,6 +48,13 @@ def report(path, since):
         if sl:
             L += ["", f"Slippage, fill vs ask at signal: mean {sum(sl) / len(sl):+.2f} c/share over {len(sl)} fills "
                       f"(p95 {pct(sl, .95):+.2f} c)"]
+    try:
+        lags = [x[0] for x in q(db, "SELECT bn_lag FROM signals WHERE t >= ? AND outcome IN ('bought','nofill')", t0)]
+        if any(x is not None for x in lags):
+            L += ["", f"Binance lag when the signal fired (ms): p50 {fmt(pct(lags, .5))}, p95 {fmt(pct(lags, .95))}, "
+                      f"max {fmt(max(x for x in lags if x is not None))}"]
+    except sqlite3.OperationalError:
+        pass                                                  # ledger from before the bn_lag column
     slow = q(db, "SELECT count(*), max(loop_ms), avg(loop_ms) FROM signals WHERE t >= ? AND outcome='slowloop'", t0)[0]
     L += ["", f"Slow loop passes: {slow[0]} (max {fmt(slow[1])} ms, avg {fmt(slow[2])} ms). Each one blocked signals."]
     L += ["", "### Trades", ""]

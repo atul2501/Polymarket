@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS ticks(
     dn_bid REAL, dn_ask REAL, dn_ask_size REAL, spot REAL, beat REAL, known REAL, sigma REAL, p_model REAL);
 CREATE TABLE IF NOT EXISTS signals(
     t REAL, slug TEXT, side TEXT, bps REAL, sig_ask REAL, sig_bid REAL, sig_size REAL, t_left REAL,
-    outcome TEXT, reason TEXT, ms_to_order REAL, ms_order REAL, ask_now REAL, fill_px REAL, loop_ms REAL);
+    outcome TEXT, reason TEXT, ms_to_order REAL, ms_order REAL, ask_now REAL, fill_px REAL, loop_ms REAL,
+    bn_lag REAL);
 """
 
 
@@ -27,6 +28,10 @@ class Ledger:
         self.db = sqlite3.connect(path, timeout=30)   # bots, settler and dashboard share the file
         self.db.execute("PRAGMA journal_mode=WAL")      # dashboard reads never block the bot's writes
         self.db.executescript(SCHEMA)
+        try:                                            # ledgers made before 23 Oct 18:00 lack the column
+            self.db.execute("ALTER TABLE signals ADD COLUMN bn_lag REAL")
+        except sqlite3.OperationalError:
+            pass
 
     def _one(self, sql, *args):
         return self.db.execute(sql, args).fetchone()[0]
@@ -78,12 +83,15 @@ class Ledger:
         self.db.commit()
 
     def signal(self, t, slug="", side="", bps=None, sig_ask=None, sig_bid=None, sig_size=None, t_left=None,
-               outcome="", reason="", ms_to_order=None, ms_order=None, ask_now=None, fill_px=None, loop_ms=None):
+               outcome="", reason="", ms_to_order=None, ms_order=None, ask_now=None, fill_px=None, loop_ms=None,
+               bn_lag=None):
         """One row per Binance signal and what became of it (bought / nofill / skip + reason), plus slow loop passes.
-        ms_to_order = signal -> order sent, ms_order = the order call itself (post to response)."""
-        self.db.execute("INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ms_to_order = signal -> order sent, ms_order = the order call itself (post to response),
+        bn_lag = how late the newest Binance update was when the signal fired."""
+        self.db.execute("INSERT INTO signals(t, slug, side, bps, sig_ask, sig_bid, sig_size, t_left, outcome, reason,"
+                        " ms_to_order, ms_order, ask_now, fill_px, loop_ms, bn_lag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (t, slug, side, bps, sig_ask, sig_bid, sig_size, t_left, outcome, reason, ms_to_order,
-                         ms_order, ask_now, fill_px, loop_ms))
+                         ms_order, ask_now, fill_px, loop_ms, bn_lag))
         self.db.commit()
 
     def binance(self, t, mid):
