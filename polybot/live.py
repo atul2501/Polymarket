@@ -27,6 +27,8 @@ HOST, CHAIN = "https://clob.polymarket.com", 137
 _f = lambda k, d: float(os.getenv(k, d))
 MAX_TRADE_USD = _f("TK_MAX_TRADE_USD", 10)   # never spend more than this on one buy
 MAX_DAY_LOSS = _f("TK_MAX_DAY_LOSS", 15)     # stop opening trades after this realised loss today (UTC)
+KEEPALIVE = _f("TK_KEEPALIVE", 0)            # seconds between warm-up requests, 0 = off (an order after 45 s of quiet took 374-911 ms vs ~215)
+KEEPALIVE_KIND = os.getenv("TK_KEEPALIVE_KIND", "auth")   # "auth" reaches Polymarket's servers, "time" only the edge
 SLIP = _f("TK_SLIP", 0.01)                   # limit = ask + 1 tick on buys, bid - 1 tick on sells
 STOP_FILE = "runs/STOP"                      # touch it to stop new entries at once (open positions still exit)
 STATUS_FILE = "runs/live.json"               # balance for the dashboard, refreshed every minute
@@ -63,6 +65,22 @@ class Live:
         if not self.dry:
             self.c.set_api_creds(self.c.create_or_derive_api_key())
         self.check(force=True)
+        if KEEPALIVE > 0 and not self.dry:
+            threading.Thread(target=self._keepalive, daemon=True).start()
+
+    def _keepalive(self):
+        """Keep the HTTP/2 connection to the CLOB warm: the bot trades a few times an hour, so without this nearly
+        every order pays for a cold connection (23 Oct: 374-911 ms after 45 s idle, 214 ms warm)."""
+        log.info("keep-alive on: %s request every %gs", KEEPALIVE_KIND, KEEPALIVE)
+        while True:
+            time.sleep(KEEPALIVE)
+            try:
+                if KEEPALIVE_KIND == "time":
+                    self.c.get_server_time()
+                else:
+                    self.c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            except Exception as e:  # noqa: BLE001 - a missed ping only makes the next order colder
+                log.debug("keep-alive failed: %r", e)
 
     def check(self, force=False):
         """Refuse to trade when geoblocked or closed-only; re-checked every 10 minutes. Balance file every minute."""

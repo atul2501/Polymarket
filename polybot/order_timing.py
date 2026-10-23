@@ -11,6 +11,9 @@
 
   --feeds        also run the bot's own Binance and order-book feeds in this process while timing: does the order slow
                  down when ~1000 messages/s compete for Python's lock (live orders took 350-800 ms, this test 250)?
+  --ping KIND    keep the connection warm while timing: KIND = time (GET /time through the client) or auth (an
+                 authenticated read, which reaches Polymarket's servers) every 8 s. Compare the "idle" lines with and
+                 without it: an order after 45 s of quiet took 374-911 ms against ~215 ms warm (23 Oct).
   --switch S     with --feeds: sys.setswitchinterval(S), e.g. 0.0005, to let the threads trade turns more often
 
 ~/.venv/bin/python order_timing.py [--post] [--maker] [--feeds [--switch 0.0005]]   keys from the environment
@@ -82,13 +85,28 @@ def main():
     print(f"market {m.slug} | {m.seconds_left(time.time()):.0f} s left | token ask {b.ask} bid {b.bid}\n")
     c.get_tick_size(tok), c.get_neg_risk(tok), c._ClobClient__resolve_version()   # warm, as live.prepare() does
     args = OrderArgs(token_id=tok, price=0.01, size=100, side="BUY")
+    if "--ping" in sys.argv:
+        import threading
+        kind = sys.argv[sys.argv.index("--ping") + 1]
+        ping = (c.get_server_time if kind == "time" else
+                lambda: c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)))
+
+        def keep():
+            while True:
+                time.sleep(8)
+                try:
+                    ping()
+                except Exception:  # noqa: BLE001 - a missed ping only means a colder next order
+                    pass
+        threading.Thread(target=keep, daemon=True).start()
+        print(f"keep-alive: {kind} every 8 s")
     show("signing (local)", lambda: c.create_order(args))
     show("plain GET /time", lambda: http.get("https://clob.polymarket.com/time", timeout=10))
     show("auth GET (balance)", lambda: c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)))
     if "--post" in sys.argv:
         post = lambda: c.create_and_post_order(args, order_type=OrderType.FAK)
         show("POST /order (no fill)", post, n=8)
-        for idle in (10, 45):                 # the first order after a quiet spell: does a cold connection cost time?
+        for idle in (45, 45, 90):                 # the first order after a quiet spell: does a cold connection cost time?
             time.sleep(idle)
             x, _ = ms(post)
             print(f"POST after {idle:2d} s idle   {x:6.0f} ms")
