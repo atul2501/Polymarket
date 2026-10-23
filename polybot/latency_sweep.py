@@ -6,6 +6,9 @@ legs. Same entry rules as taker.py (cooldown, no entry in the last MIN_LEFT seco
 
 python latency_sweep.py runs/live-t01.db [more.db ...] [--since 2026-10-23T15:00] [--delays 0.1,0.3,0.5,0.8]
                                           [--bps 2] [--sec 1] [--hold 5] [--size 5] [--band 0.05,0.95]
+--settle   hold to settlement instead of selling (W-3bp style): pays 1 per share if the side wins, else 0, fee on
+           the buy only; the cooldown then applies per side, not across both. A round counts only if its last
+           recorded tick is within 10 s of the end. W-3bp: --bps 3 --sec 3 --settle --cooldown 2 --band 0.15,0.85
 Each db needs the `ticks` and `binance` tables that every taker.py ledger records (~10 Hz).
 """
 import argparse
@@ -42,13 +45,16 @@ def replay(bn, ticks, delay, a):
         by_slug[r[1]][0].append(r[0])
         by_slug[r[1]][1].append(r)
     fee = config.DEFAULT_FEE
-    out, last_entry = [], -1e9
+    out, last_entry = [], {True: -1e9, False: -1e9}
     for t, mid in bn:
         i = bisect.bisect_right(bt, t - a.sec) - 1
-        if i < 0 or t - a.sec - bt[i] > GAP or t - last_entry < a.cooldown:
+        if i < 0 or t - a.sec - bt[i] > GAP:
             continue
         bps = (mid / bn[i][1] - 1) * 1e4
         if abs(bps) < a.bps:
+            continue
+        up = bps > 0
+        if t - (last_entry[up] if a.settle else max(last_entry.values())) < a.cooldown:
             continue
         j = bisect.bisect_right(tt, t) - 1                     # the round being traded: smallest t_left near t
         near = [r for r in ticks[max(0, j - 6):j + 1] if t - r[0] <= GAP and r[2] > 0]
@@ -61,11 +67,18 @@ def replay(bn, ticks, delay, a):
         enter = at_or_after(times, rows, t + delay)
         if not enter:
             continue
-        up = bps > 0
         ask, size = (enter[4], enter[5]) if up else (enter[7], enter[8])
         if ask is None or not a.lo <= ask <= a.hi or (size or 0) < a.size:
             continue
-        last_entry = t + delay
+        last_entry[up] = t + delay
+        if a.settle:
+            end = rows[-1]                                    # the round's last recorded tick decides the winner
+            if end[2] > 10 or end[3] is None:
+                continue
+            win = (end[3] >= 0.5) == up
+            pnl = ((1.0 if win else 0.0) - ask) * a.size - taker_fee(ask, a.size, fee)
+            out.append((t, ask, 1.0 if win else 0.0, pnl))
+            continue
         leave = at_or_after(times, rows, t + delay + a.hold)
         bid = None if not leave else (leave[3] if up else leave[6])
         if bid is None:
@@ -87,12 +100,14 @@ def main():
     p.add_argument("--cooldown", type=float, default=10)
     p.add_argument("--min-left", type=float, default=30, dest="min_left")
     p.add_argument("--band", default="0.05,0.95")
+    p.add_argument("--settle", action="store_true")
     a = p.parse_args()
     a.lo, a.hi = (float(x) for x in a.band.split(","))
     data = [load(d, a.since) for d in a.dbs]
     hours = sum((bn[-1][0] - bn[0][0]) / 3600 for bn, _ in data if len(bn) > 1)
-    print(f"{len(a.dbs)} db(s), {hours:.1f} h of data | {a.bps:g} bp in {a.sec:g}s, hold {a.hold:g}s, size {a.size:g}, "
-          f"ask {a.lo}-{a.hi}, cooldown {a.cooldown:g}s\n")
+    print(f"{len(a.dbs)} db(s), {hours:.1f} h of data | {a.bps:g} bp in {a.sec:g}s, size {a.size:g}, "
+          f"ask {a.lo}-{a.hi}, cooldown {a.cooldown:g}s{' per side' if a.settle else ''}, "
+          f"{'hold to settlement' if a.settle else f'sell after {a.hold:g}s'}\n")
     print(f"{'delay':>6} {'trades':>7} {'win%':>5} {'c/share':>8} {'total $':>8} {'$/hour':>7}")
     for d in (float(x) for x in a.delays.split(",")):
         rows = [r for bn, ticks in data for r in replay(bn, ticks, d, a)]
