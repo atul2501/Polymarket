@@ -52,6 +52,7 @@ FAST_AVG_SEC = _f("MM_FAST_AVG_SEC", 10)  # no averaging down this long after Bi
 RESERVE = os.getenv("MM_RESERVE", "1") != "0"  # adding to the heavy side keeps budget to pair it (21 Oct 11:05PM: -$7.75)
 NOWCAST = os.getenv("MM_NOWCAST", "1") != "0"  # model spot = Chainlink + Binance move since the Chainlink point
 LOOP_SEC = _f("MM_LOOP_SEC", 0.1)         # Polymarket follows Binance within ~0.4 s
+LAT = _f("MM_LAT", 0)                     # seconds for a quote change to reach the book (real: post 0.085, cancel 0.075)
 BUDGET = _f("MM_BUDGET", 50)           # $ per round
 STOP_SEC = _f("MM_STOP_SEC", 20)
 MIN_SIDE = _f("MM_MIN_SIDE", 0.40)     # real fills overnight: -$65.29 -> +$5.58 with this alone
@@ -143,6 +144,8 @@ class Round:
         self.side_cost = {"Up": 0.0, "Down": 0.0}
         self.cost = 0.0
         self.resting = {"Up": None, "Down": None}  # side -> [price, size ahead of us in the queue]
+        self.wish = {"Up": None, "Down": None}     # MM_LAT: the quote we last asked for
+        self.pend = {"Up": None, "Down": None}     # MM_LAT: (effective at, price, queue ahead) still travelling
         self.hist = []                               # (t, p_up) for the pull rule
         self.pulled_until = {"Up": 0.0, "Down": 0.0}
         self.boost_until = {"Up": 0.0, "Down": 0.0}
@@ -179,7 +182,26 @@ class Round:
             n = min(n, left - d * (1 - px))
         return max(0.0, n)
 
-    def place(self, side, px, ahead):
+    def place(self, side, px, ahead, now=None):
+        """Ask for a bid (None = cancel). With MM_LAT > 0 the change takes effect only LAT seconds later, like a real
+        post (85 ms) or cancel (75 ms, measured from Stockholm 23 Oct): until then the old quote can still be hit."""
+        if LAT > 0 and now is not None:
+            if px == self.wish[side]:
+                return
+            self.wish[side] = px
+            self.pend[side] = (now + LAT, px, ahead)
+            return
+        self._place(side, px, ahead)
+
+    def apply(self, now):
+        """Make the pending quote changes whose trip has finished."""
+        for side in SIDES:
+            p = self.pend[side]
+            if p and p[0] <= now:
+                self.pend[side] = None
+                self._place(side, p[1], p[2])
+
+    def _place(self, side, px, ahead):
         """Rest a bid; keep our queue spot if the price didn't change."""
         cur = self.resting[side]
         if px is None:
@@ -237,7 +259,9 @@ def topup(r, t_left, p_up, books_by_side):
 
 
 def live():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname).1s %(message)s", datefmt="%H:%M:%S")
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname).1s %(message)s", datefmt="%H:%M:%S",
+                        handlers=[logging.StreamHandler(), logging.FileHandler(LEDGER.with_suffix(".log"))])
     http = requests.Session()
     ws = BookFeed().start()
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
@@ -265,6 +289,7 @@ def live():
                 t_left = m.seconds_left(now)
                 up, dn = books[m.up_token], books[m.down_token]
                 mine = [(ps, side_of(m, a), price, size) for (_, a, price, size, ps) in raw if side_of(m, a)]
+                r.apply(now)
                 for side in SIDES:          # prints since the last tick can only hit bids that were resting then
                     if n := r.fill(side, mine):
                         led.record(m, "mm", Leg(side, r.resting[side][0], n, 0.0))
@@ -272,8 +297,8 @@ def live():
                                  r.resting[side][0], n, r.sh["Up"], r.sh["Down"], r.cost)
                 sp, beat, known, src = spot.view(m.asset, m.start, m.end, now)
                 if sp is None or beat is None or src != "chainlink":
-                    r.place("Up", None, 0)
-                    r.place("Down", None, 0)
+                    r.place("Up", None, 0, now)
+                    r.place("Down", None, 0, now)
                     continue
                 cl, bnow = chain.last_t("btc/usd"), bn.at(now)
                 if NOWCAST and cl and bnow and (bthen := bn.at(cl[0] + 1, max_age=5)):
@@ -298,7 +323,7 @@ def live():
                     value = p_up if side == "Up" else 1 - p_up
                     px = pair_quote(r, side, book.bid, book.ask, value, r.skew(), target, now < r.pulled_until[side],
                                     now < r.boost_until[side], now < r.no_avg_until[side]) if quoting else None
-                    r.place(side, px, ws.depth(m.up_token if side == "Up" else m.down_token, px) if px else 0)
+                    r.place(side, px, ws.depth(m.up_token if side == "Up" else m.down_token, px) if px else 0, now)
                 if not halted and (t := topup(r, t_left, p_up, {"Up": up, "Down": dn})):
                     fav, ask, n = t
                     fee = taker_fee(ask, n, m.fee)
