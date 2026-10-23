@@ -49,20 +49,27 @@ def main():
     c.set_api_creds(c.create_or_derive_api_key())
     http = requests.Session()
     feed = MarketFeed(http)
-    now = time.time()
-    m = feed.current(now)[0]
-    books = feed.books([m])
-    tok = m.up_token if books[m.up_token].ask and books[m.up_token].ask > 0.05 else m.down_token
-    b = books[tok]
-    print(f"market {m.slug} | token ask {b.ask} bid {b.bid}\n")
+    for _ in range(80):                       # wait for a round with 60+ s left and a token whose ask is 0.10-0.90
+        now = time.time()
+        pick = None
+        for m in feed.current(now):
+            books = feed.books([m])
+            for tok in (m.up_token, m.down_token):
+                if m.seconds_left(now) > 60 and books[tok].ask and 0.10 <= books[tok].ask <= 0.90:
+                    pick = (m, tok, books[tok])
+        if pick:
+            break
+        time.sleep(5)
+    else:
+        sys.exit("no suitable market in 6 minutes")
+    m, tok, b = pick
+    print(f"market {m.slug} | {m.seconds_left(time.time()):.0f} s left | token ask {b.ask} bid {b.bid}\n")
     c.get_tick_size(tok), c.get_neg_risk(tok), c._ClobClient__resolve_version()   # warm, as live.prepare() does
     args = OrderArgs(token_id=tok, price=0.01, size=100, side="BUY")
     show("signing (local)", lambda: c.create_order(args))
     show("plain GET /time", lambda: http.get("https://clob.polymarket.com/time", timeout=10))
     show("auth GET (balance)", lambda: c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)))
     if "--post" in sys.argv:
-        if not b.ask or b.ask <= 0.05:
-            sys.exit("ask too low for a safe no-fill test, try again in a minute")
         post = lambda: c.create_and_post_order(args, order_type=OrderType.FAK)
         show("POST /order (no fill)", post, n=8)
         for idle in (10, 45):                 # the first order after a quiet spell: does a cold connection cost time?
