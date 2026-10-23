@@ -17,6 +17,7 @@ python taker.py        live paper run (ledger TK_LEDGER, default runs/taker.db);
 TK_LIVE=1              REAL orders through live.py (FAK, no paper delay); see live.py for keys and safety limits
 """
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -48,6 +49,16 @@ LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
     DELAY_SEC = 0.0                          # real orders pay the real network delay, no simulated one
+# TK_REAL=1: paper fills follow the execution measured live on 23 Oct 2026 (Stockholm), see realistic.env:
+# decide CODE_DELAY after the signal, the order matches MATCH_DELAY later against the book of THAT moment (a taker
+# delay of ~150 ms + the trip), is killed when the ask ran past the pad, buys >= $1, and the sale decided HOLD after
+# the bot learns the fill (RESP_DELAY) matches MATCH_DELAY later too. Without it the paper bot fills at the ask seen
+# DELAY_SEC after the signal, which over-stated live results by ~7 c/share.
+REAL = os.getenv("TK_REAL", "0") != "0" and not LIVE
+CODE_DELAY, MATCH_DELAY, RESP_DELAY = _f("TK_CODE_DELAY", 0.07), _f("TK_MATCH_DELAY", 0.20), _f("TK_RESP_DELAY", 0.15)
+PAD = _f("TK_SLIP", 0.02)                    # limit = ask + PAD on buys, bid - PAD on sells (same name as live.py)
+if REAL:
+    DELAY_SEC = CODE_DELAY
 
 
 def signal(bps):
@@ -79,6 +90,27 @@ def entry_block(book, t_left):
     return "ask_size"
 
 
+def plan_shares(limit):
+    """Shares a live buy sends: SIZE, or more when SIZE x limit is under Polymarket's $1 minimum for a marketable buy."""
+    return max(SIZE, math.ceil(100 / limit) / 100)
+
+
+def real_buy(limit, book, planned):
+    """Paper FAK BUY at matching time: (shares, price) filled from the best ask, or (0, limit) when killed."""
+    if book is None or book.ask is None or book.ask > limit + 1e-9:
+        return 0.0, limit
+    got = math.floor(min(planned, book.ask_size) * 100) / 100
+    return (got, book.ask) if got >= 1 else (0.0, limit)
+
+
+def real_sell(limit, book, left):
+    """Paper FAK SELL at matching time: (shares, price) filled from the best bid, or (0, limit) when killed."""
+    if book is None or book.bid is None or book.bid < limit - 1e-9:
+        return 0.0, limit
+    got = math.floor(min(left, book.bid_size) * 100) / 100
+    return (got, book.bid) if got >= 0.01 else (0.0, limit)
+
+
 def token(m, side):
     return m.up_token if side == "Up" else m.down_token
 
@@ -106,6 +138,7 @@ def live():
     feed, led = MarketFeed(http, ws), Ledger(LEDGER)
     bn = BinanceFeed().start()
     pending, pos = None, None   # pending: (fire_at, market, side); pos: (id, market, side, exit_at, shares, sold_usd)
+    matching, sell_plan = None, {}   # TK_REAL: matching: (match_at, market, side, limit, planned shares); sell_plan: id -> sell limit
     lx = None
     if LIVE:
         from live import Live                  # imported only here: paper runs don't need the CLOB client
@@ -165,12 +198,22 @@ def live():
                 if pos and pos[1].slug == m.slug and now >= pos[3]:
                     pid, _, side, _, left, got = pos
                     bid = side_book[side].bid
-                    if bid is not None:
-                        sold, px = lx.sell(token(m, side), bid, left) if lx else (left, bid)
+                    if bid is not None and REAL and pid not in sell_plan:
+                        sell_plan[pid] = round(max(bid - PAD, 0.01), 2)   # decided on this bid; it matches MATCH_DELAY later
+                        pos = (pid, m, side, now + MATCH_DELAY, left, got)
+                    elif bid is not None:
+                        if lx:
+                            sold, px = lx.sell(token(m, side), bid, left)
+                        elif REAL:
+                            sold, px = real_sell(sell_plan.get(pid, 0.01), side_book[side], left)   # book of the matching moment
+                        else:
+                            sold, px = left, bid
                         left, got = left - sold, got + sold * px
                         if left >= 0.01:           # live: not (fully) sold yet, retry in 1 s until the round ends
                             pos = (pid, m, side, now + 1, left, got)
+                            sell_plan.pop(pid, None)   # a retry decides again on a fresh bid
                         else:
+                            sell_plan.pop(pid, None)
                             shares = led._one("SELECT shares FROM trades WHERE id=?", pid)
                             avg = got / shares
                             led.close(pid, avg, taker_fee(avg, 1, m.fee))
@@ -178,6 +221,22 @@ def live():
                             log.info("[BTC 5m] SELL %s @ %.2f x%g | P/L %+.2f | total %+.2f", side, avg, shares, pnl,
                                      led._one("SELECT coalesce(sum(pnl),0) FROM trades WHERE status!='open'"))
                             pos = None
+                if matching and matching[1].slug == m.slug and now >= matching[0]:   # TK_REAL: the order reaches the book
+                    _, _, side, limit, planned = matching
+                    matching = None
+                    shares, px = real_buy(limit, side_book[side], planned)
+                    timing = dict(ms_to_order=CODE_DELAY * 1000, ms_order=MATCH_DELAY * 1000, ask_now=side_book[side].ask,
+                                  t_left=t_left)
+                    if shares < 0.01:
+                        note(sig, "nofill", "no_fill", **timing)
+                        log.info("[BTC 5m] BUY %s @ %.2f got no fill (ask now %s)", side, limit, side_book[side].ask)
+                    else:
+                        note(sig, "bought", fill_px=px, **timing)
+                        fee = taker_fee(px, shares, m.fee)
+                        pid = led.record(m, "taker", Leg(side, px, shares, fee), "paper")
+                        if not SETTLE:
+                            pos = (pid, m, side, now + RESP_DELAY + HOLD_SEC, shares, 0.0)
+                        log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)
                 if pending and pending[1].slug == m.slug and now >= pending[0]:
                     _, _, side = pending
                     pending = None
@@ -188,6 +247,11 @@ def live():
                             if now - blocked_log > 60:
                                 blocked_log = now
                                 log.warning("[BTC 5m] entry skipped: %s", why)
+                            continue
+                        if REAL:                       # paper: the order is in flight, matching later against the book then
+                            limit = round(ask + PAD, 2)
+                            matching = (now + MATCH_DELAY, m, side, limit, plan_shares(limit))
+                            last_entry[side] = now
                             continue
                         t_order = time.time()
                         shares, px = lx.buy(token(m, side), ask, SIZE) if lx else (SIZE, ask)
@@ -210,7 +274,7 @@ def live():
                 side = signal(bps)
                 if side:
                     ctx = context(now, m, side, bps, t_left)
-                    if pending is not None or pos is not None:
+                    if pending is not None or pos is not None or matching is not None:
                         note(ctx, "skip", "busy", dedupe=True)
                     elif now - (last_entry[side] if SETTLE else max(last_entry.values())) < COOLDOWN:
                         note(ctx, "skip", "cooldown", dedupe=True)

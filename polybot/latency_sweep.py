@@ -25,12 +25,13 @@ from engine import taker_fee
 GAP = 0.35   # a book/Binance sample further than this from the wanted time counts as missing data
 
 
-def load(path, since):
+def load(path, since, until=None):
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     t0 = datetime.fromisoformat(since).replace(tzinfo=timezone.utc).timestamp() if since else 0
-    bn = db.execute("SELECT t, mid FROM binance WHERE t >= ? ORDER BY t", (t0,)).fetchall()
+    t1 = datetime.fromisoformat(until).replace(tzinfo=timezone.utc).timestamp() if until else 9e12
+    bn = db.execute("SELECT t, mid FROM binance WHERE t >= ? AND t < ? ORDER BY t", (t0, t1)).fetchall()
     ticks = db.execute("SELECT t, slug, t_left, up_bid, up_ask, up_ask_size, dn_bid, dn_ask, dn_ask_size"
-                       " FROM ticks WHERE t >= ? ORDER BY t", (t0,)).fetchall()
+                       " FROM ticks WHERE t >= ? AND t < ? ORDER BY t", (t0, t1)).fetchall()
     return bn, ticks
 
 
@@ -108,6 +109,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("dbs", nargs="+")
     p.add_argument("--since")
+    p.add_argument("--until")
     p.add_argument("--delays", default="0.1,0.2,0.3,0.4,0.5,0.7,1.0")
     p.add_argument("--bps", type=float, default=2)
     p.add_argument("--sec", type=float, default=1)
@@ -121,7 +123,7 @@ def main():
     p.add_argument("--max-spread", type=float, default=None, dest="max_spread")
     a = p.parse_args()
     a.lo, a.hi = (float(x) for x in a.band.split(","))
-    data = [load(d, a.since) for d in a.dbs]
+    data = [load(d, a.since, a.until) for d in a.dbs]
     hours = sum((bn[-1][0] - bn[0][0]) / 3600 for bn, _ in data if len(bn) > 1)
     print(f"{len(a.dbs)} db(s), {hours:.1f} h of data | {a.bps:g} bp in {a.sec:g}s, size {a.size:g}, "
           f"ask {a.lo}-{a.hi}, cooldown {a.cooldown:g}s{' per side' if a.settle else ''}, "
