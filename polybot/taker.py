@@ -40,6 +40,7 @@ SIZE = _f("TK_SIZE", 10)
 MIN_ASK, MAX_ASK = _f("TK_MIN_ASK", 0.05), _f("TK_MAX_ASK", 0.95)
 MIN_LEFT = _f("TK_MIN_LEFT", 30)         # no entries in the last 30 s
 COOLDOWN = _f("TK_COOLDOWN", 10)
+MAX_SPREAD = _f("TK_MAX_SPREAD", 1.0)    # skip a side whose ask-bid is wider (23 Oct: bought a new round's first second at 0.83/0.91)
 LOOP_SEC = _f("TK_LOOP", 0.05)
 SLOW_LOOP_MS = _f("TK_SLOW_LOOP_MS", 250)   # a loop pass longer than this is written to the signals table
 SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown applies per side
@@ -60,6 +61,8 @@ def entry_price(book, t_left):
     """Ask to pay for SIZE shares, or None if the book doesn't allow an entry."""
     if t_left < MIN_LEFT or book is None or book.ask is None or not MIN_ASK <= book.ask <= MAX_ASK:
         return None
+    if MAX_SPREAD < 1 and (book.bid is None or book.ask - book.bid > MAX_SPREAD + 1e-9):
+        return None
     return book.ask if book.ask_size >= SIZE else None
 
 
@@ -71,6 +74,8 @@ def entry_block(book, t_left):
         return "no_ask"
     if not MIN_ASK <= book.ask <= MAX_ASK:
         return "ask_band"
+    if MAX_SPREAD < 1 and (book.bid is None or book.ask - book.bid > MAX_SPREAD + 1e-9):
+        return "spread"
     return "ask_size"
 
 
@@ -209,6 +214,8 @@ def live():
                         note(ctx, "skip", "busy", dedupe=True)
                     elif now - (last_entry[side] if SETTLE else max(last_entry.values())) < COOLDOWN:
                         note(ctx, "skip", "cooldown", dedupe=True)
+                    elif DELAY_SEC == 0 and entry_price(side_book[side], t_left) is None:   # live: the order would be refused anyway
+                        note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)
                     else:
                         pending, sig = (now + DELAY_SEC, m, side), ctx
                         log.info("[BTC 5m] SIGNAL Binance %+.1f bp in %gs -> %s (UP %s/%s)", bps, MOVE_SEC, side,

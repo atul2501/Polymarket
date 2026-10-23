@@ -6,6 +6,7 @@ legs. Same entry rules as taker.py (cooldown, no entry in the last MIN_LEFT seco
 
 python latency_sweep.py runs/live-t01.db [more.db ...] [--since 2026-10-23T15:00] [--delays 0.1,0.3,0.5,0.8]
                                           [--bps 2] [--sec 1] [--hold 5] [--size 5] [--band 0.05,0.95]
+--max-spread X   skip a signal whose side has ask - bid wider than X at signal time (taker.py: TK_MAX_SPREAD)
 --pad X    the order's limit is the ask seen at signal time + X (live: TK_SLIP 0.01); it fills only if the ask at
            arrival is within it, else it is killed (still uses the cooldown). Default: always fills.
 --settle   hold to settlement instead of selling (W-3bp style): pays 1 per share if the side wins, else 0, fee on
@@ -73,6 +74,11 @@ def replay(bn, ticks, delay, a):
         ask, size = (enter[4], enter[5]) if up else (enter[7], enter[8])
         if ask is None or not a.lo <= ask <= a.hi or (size or 0) < a.size:
             continue
+        if a.max_spread is not None:
+            seen = at_or_after(times, rows, t)
+            sb, sa = (None, None) if not seen else ((seen[3], seen[4]) if up else (seen[6], seen[7]))
+            if sb is None or sa is None or sa - sb > a.max_spread + 1e-9:
+                continue                                         # the bot would not have sent an order
         last_entry[up] = t + delay
         if a.pad is not None:
             seen = at_or_after(times, rows, t)               # the book the bot saw when it fired
@@ -112,6 +118,7 @@ def main():
     p.add_argument("--band", default="0.05,0.95")
     p.add_argument("--settle", action="store_true")
     p.add_argument("--pad", type=float, default=None)
+    p.add_argument("--max-spread", type=float, default=None, dest="max_spread")
     a = p.parse_args()
     a.lo, a.hi = (float(x) for x in a.band.split(","))
     data = [load(d, a.since) for d in a.dbs]

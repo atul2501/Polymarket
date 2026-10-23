@@ -9,7 +9,11 @@
   --maker        a resting post-only order (100 shares at 0.01, never fills) and its cancel, each timed: do resting
                  orders skip the delay a taker order pays?
 
-~/.venv/bin/python order_timing.py [--post] [--maker]   keys from the environment (source ~/.polybot-secrets)
+  --feeds        also run the bot's own Binance and order-book feeds in this process while timing: does the order slow
+                 down when ~1000 messages/s compete for Python's lock (live orders took 350-800 ms, this test 250)?
+  --switch S     with --feeds: sys.setswitchinterval(S), e.g. 0.0005, to let the threads trade turns more often
+
+~/.venv/bin/python order_timing.py [--post] [--maker] [--feeds [--switch 0.0005]]   keys from the environment
 """
 import os
 import statistics
@@ -66,6 +70,15 @@ def main():
     else:
         sys.exit("no suitable market in 6 minutes")
     m, tok, b = pick
+    if "--feeds" in sys.argv:
+        from feeds import BinanceFeed, BookFeed
+        if "--switch" in sys.argv:
+            sys.setswitchinterval(float(sys.argv[sys.argv.index("--switch") + 1]))
+        ws = BookFeed().start()
+        BinanceFeed().start()
+        ws.watch([m.up_token, m.down_token])
+        time.sleep(8)                                     # let both feeds run at full rate
+        print(f"feeds on: {ws.msgs} book messages in 8 s | switch interval {sys.getswitchinterval()}")
     print(f"market {m.slug} | {m.seconds_left(time.time()):.0f} s left | token ask {b.ask} bid {b.bid}\n")
     c.get_tick_size(tok), c.get_neg_risk(tok), c._ClobClient__resolve_version()   # warm, as live.prepare() does
     args = OrderArgs(token_id=tok, price=0.01, size=100, side="BUY")
