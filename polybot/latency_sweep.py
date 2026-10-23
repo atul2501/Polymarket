@@ -48,6 +48,7 @@ def replay(bn, ticks, delay, a):
         by_slug[r[1]][1].append(r)
     fee = config.DEFAULT_FEE
     out, misses, last_entry = [], [0], {True: -1e9, False: -1e9}
+    busy_until = -1e9                  # taker.py enters only with no open position (not in --settle mode)
     for t, mid in bn:
         i = bisect.bisect_right(bt, t - a.sec) - 1
         if i < 0 or t - a.sec - bt[i] > GAP:
@@ -56,7 +57,7 @@ def replay(bn, ticks, delay, a):
         if abs(bps) < a.bps:
             continue
         up = bps > 0
-        if t - (last_entry[up] if a.settle else max(last_entry.values())) < a.cooldown:
+        if t - (last_entry[up] if a.settle else max(last_entry.values())) < a.cooldown or t < busy_until:
             continue
         j = bisect.bisect_right(tt, t) - 1                     # the round being traded: smallest t_left near t
         near = [r for r in ticks[max(0, j - 6):j + 1] if t - r[0] <= GAP and r[2] > 0]
@@ -87,6 +88,7 @@ def replay(bn, ticks, delay, a):
             pnl = ((1.0 if win else 0.0) - ask) * a.size - taker_fee(ask, a.size, fee)
             out.append((t, ask, 1.0 if win else 0.0, pnl))
             continue
+        busy_until = t + delay + a.hold
         leave = at_or_after(times, rows, t + delay + a.hold)
         bid = None if not leave else (leave[3] if up else leave[6])
         if bid is None:
