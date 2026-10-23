@@ -200,7 +200,7 @@ def live():
                             continue
                         note(sig, "bought", fill_px=px, **timing)
                         fee = taker_fee(px, shares, m.fee)
-                        pid = led.record(m, "taker", Leg(side, px, shares, fee))
+                        pid = led.record(m, "taker", Leg(side, px, shares, fee), "paper" if lx and lx.dry else None)   # dry fills must not use the loss cap
                         if not SETTLE:
                             pos = (pid, m, side, now + HOLD_SEC, shares, 0.0)
                         log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)

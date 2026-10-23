@@ -40,12 +40,12 @@ class Ledger:
     def wallet(self):
         return config.BASE_BALANCE * config.TRADE_SCALE
 
-    def record(self, m, strategy, leg):
+    def record(self, m, strategy, leg, mode=None):
         cost = leg.price * leg.shares + leg.fee
         cur = self.db.execute(
             "INSERT INTO trades(ts, mode, strategy, asset, window, window_end, slug, side, price, shares, fee, cost)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (datetime.now(timezone.utc).isoformat(timespec="seconds"), "paper" if config.DRY_RUN else "live",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"), mode or ("paper" if config.DRY_RUN else "live"),
              strategy, m.asset, m.label, m.end, m.slug, leg.side, leg.price, leg.shares, leg.fee, cost))
         self.db.commit()
         return cur.lastrowid
