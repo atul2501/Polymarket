@@ -4,6 +4,13 @@
 #   rsync -az --exclude .venv --exclude runs --exclude __pycache__ polybot ec2-user@<server>:poly/
 #   ssh ec2-user@<server> bash poly/polybot/deploy/setup.sh
 #
+# New server from GitHub instead (must land in ~/poly: the services expect /home/ec2-user/poly/polybot):
+#
+#   sudo dnf -y install git && git clone -b live-gap-fix https://github.com/atul2501/Polymarket.git ~/poly
+#   bash ~/poly/polybot/deploy/setup.sh            later updates: git -C ~/poly pull && bash ~/poly/polybot/deploy/setup.sh
+#
+# Never run polybot-live on two servers with the same wallet: both would trade. Stop it on the old one first.
+#
 # Starts the paper twin, latency monitor and dashboard. The live bot starts only once ~/.polybot-secrets exists,
 # and then in LIVE-DRY mode (see polybot-live.service to go live).
 set -eu
