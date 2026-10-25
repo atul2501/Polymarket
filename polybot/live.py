@@ -234,7 +234,7 @@ class Live:
         got, px = self._fak(token, "BUY", limit, size)
         if got and self.balance is not None:
             self.balance -= got * px                       # until the next refresh
-        if got:
+        if got and not self.dry:                           # dry has no API creds and no real shares to read
             self.have.pop(token, None)
             self.watch(token)
         return got, px

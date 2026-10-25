@@ -555,8 +555,10 @@ function render(d) {
 
   // 06 integrity
   if (I.length) {
-    const worstCov = Math.min(...I.map(x => x.coverage)), worstBn = Math.min(...I.map(x => x.bn_coverage)), gaps = sum((b, i) => i.gaps);
-    const maxGap = Math.max(...I.map(x => x.max_gap)), rec = sum((b, i) => i.reconnects);
+    // a live bot runs with TK_RECORD=0 (no books/Binance written, its paper twin records them): leave it out
+    const R = I.filter(x => x.ticks > 0), RR = R.length ? R : I;
+    const worstCov = Math.min(...RR.map(x => x.coverage)), worstBn = Math.min(...RR.map(x => x.bn_coverage)), gaps = RR.reduce((a, x) => a + x.gaps, 0);
+    const maxGap = Math.max(...RR.map(x => x.max_gap)), rec = sum((b, i) => i.reconnects);
     const level = worstCov >= 99.9 && worstBn >= 99.5 && gaps === 0 ? "ok" : worstCov >= 99 ? "minor" : "bad";
     const icon = {ok: '<path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
       minor: '<path d="M8 4v5M8 11.5v.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/>', bad: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>'}[level];
@@ -565,9 +567,9 @@ function render(d) {
       <span>Order book recorded ${worstCov.toFixed(2)}% of the time (worst bot) · Binance ${worstBn.toFixed(2)}% · ${gaps} book gap${gaps === 1 ? "" : "s"} longer than ${d.gap_sec} s · longest hole ${maxGap.toFixed(1)} s · ${rec} feed reconnect${rec === 1 ? "" : "s"}, all recovered</span></div>`;
     const covCell = v => `<span class="cov"><span class="m"><i style="width:${Math.max(2, Math.min(100, (v - 95) / 5 * 100))}%;background:${v >= 99.9 ? "var(--up)" : v >= 99 ? "var(--warn)" : "var(--down)"}"></i></span><span class="num">${v.toFixed(2)}%</span></span>`;
     $("integ").innerHTML = bots.map((b, i) => { const x = I[i]; return `<tr><td><span class="who"><span class="bar" style="background:${colorOf(b.name)};height:18px"></span><b>${esc(b.name)}</b></span></td>
-      <td class="num">${x.ticks.toLocaleString()}</td><td class="num">${x.tick_rate.toFixed(1)}</td><td>${covCell(x.coverage)}</td>
+      ${!x.ticks && R.length ? '<td colspan="7" class="dim">not recorded here (live bot; its paper twin records the market)</td>' : `<td class="num">${x.ticks.toLocaleString()}</td><td class="num">${x.tick_rate.toFixed(1)}</td><td>${covCell(x.coverage)}</td>
       <td class="num ${x.gaps ? "warn" : ""}">${x.gaps}</td><td class="num">${x.max_gap.toFixed(1)} s</td><td>${covCell(x.bn_coverage)}</td>
-      <td class="num ${x.bn_gaps ? "warn" : ""}">${x.bn_gaps}</td><td class="num">${x.reconnects}</td><td class="num">${b.rounds_traded}</td></tr>`; }).join("");
+      <td class="num ${x.bn_gaps ? "warn" : ""}">${x.bn_gaps}</td>`}<td class="num">${x.reconnects}</td><td class="num">${b.rounds_traded}</td></tr>`; }).join("");
     $("integnote").textContent = `Coverage = the share of the ${dur(I[0].elapsed)} since the start in which the bot had fresh data; any hole longer than 1 s counts as missing. Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
   }
   drawChart();

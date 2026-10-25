@@ -138,6 +138,13 @@ class Tracker:
 trackers = {}
 
 
+def log_age(path):
+    try:
+        return time.time() - path.with_suffix(".log").stat().st_mtime
+    except OSError:
+        return 1e9
+
+
 def bot_state(name, db_name):
     path = RUNS / db_name
     if not path.exists():
@@ -168,7 +175,9 @@ def bot_state(name, db_name):
     cost = sum(r[6] for r in closed)
     n = len(closed)
     return {
-        "name": name, "running": tick is not None and now - tick[0] < 10, "pnl": round(cum, 2), "cost": round(cost, 2),
+        # a bot that records books is alive while they're fresh; a live bot (TK_RECORD=0) logs a status line every 300 s
+        "running": now - tick[0] < 10 if tick else log_age(path) < 330,
+        "name": name, "pnl": round(cum, 2), "cost": round(cost, 2),
         "ret": cum / cost * 100 if cost else None, "trades": n, "open_n": len(rows) - n,
         "win_rate": len(wins) / n if n else None, "avg_win": sum(wins) / len(wins) if wins else None,
         "avg_loss": sum(losses) / len(losses) if losses else None, "max_dd": round(dd, 2), "series": series,
@@ -260,9 +269,10 @@ def wallet_round(slug):
     if not m or isinstance(m, dict):
         return None
     out = {"Up": [0.0, 0.0], "Down": [0.0, 0.0], "fills": 0, "last": None, "list": [], "taker_sh": 0.0}
+    # "_": Cloudflare caches data-api answers 300 s; the empty answer from a round's first seconds stuck (25 Oct)
     for off in range(0, 10000, 500):
         page = http.get("https://data-api.polymarket.com/trades", params={"user": WALLET, "market": m[0]["conditionId"],
-                        "limit": 500, "offset": off, "takerOnly": "false"}, timeout=15).json()
+                        "limit": 500, "offset": off, "takerOnly": "false", "_": int(time.time())}, timeout=15).json()
         for x in page:
             out[x["outcome"]][0] += x["size"]
             out[x["outcome"]][1] += x["size"] * x["price"]
@@ -272,7 +282,7 @@ def wallet_round(slug):
         if len(page) < 500:
             break
     taker = http.get("https://data-api.polymarket.com/trades", params={"user": WALLET, "market": m[0]["conditionId"],
-                     "limit": 500, "takerOnly": "true"}, timeout=15).json()
+                     "limit": 500, "takerOnly": "true", "_": int(time.time())}, timeout=15).json()
     out["taker_sh"] = sum(x["size"] for x in taker)   # first 500 taker fills is plenty for a share
     out["list"] = sorted(out["list"], reverse=True)[:30]
     return out
