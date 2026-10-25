@@ -245,6 +245,16 @@ def main():
     bot.watch = lambda *a, **k: None                                                 # no thread in the test
     assert bot.sell("tok", 0.61, 10)[0] == 0                                         # returns at once, retried next pass
 
+    # live loss cap counts held (open) positions as at risk: $3 lost + $13 held >= $15 cap -> blocked
+    led = Ledger(Path(tempfile.mkdtemp()) / "cap.db")
+    day = __import__("time").strftime("%Y-%m-%dT%H:%M:%S", __import__("time").gmtime())
+    led.db.execute("INSERT INTO trades(ts, mode, status, pnl, cost) VALUES (?, 'live', 'sold', -3, 5)", (day,))
+    led.db.execute("INSERT INTO trades(ts, mode, status, pnl, cost) VALUES (?, 'live', 'open', NULL, 13)", (day,))
+    bot.c, lv.MAX_DAY_LOSS = None, 15
+    assert "loss limit" in (bot.blocked_reason(led) or "")
+    led.db.execute("UPDATE trades SET cost = 5 WHERE status = 'open'")
+    assert bot.blocked_reason(led) is None                                          # $3 + $5 < $15
+
     print("ok")
 
 

@@ -166,8 +166,11 @@ class Live:
         day = time.strftime("%Y-%m-%d", time.gmtime())
         since = max(day, LOSS_SINCE)                  # ISO strings compare in time order
         lost = led._one("SELECT coalesce(sum(pnl), 0) FROM trades WHERE mode='live' AND status!='open' AND ts >= ?", since)
-        if lost <= -MAX_DAY_LOSS:
-            return f"loss limit hit since {since} ({lost:+.2f} <= -{MAX_DAY_LOSS:g})"
+        # positions held to settlement can still go to 0: count their cost as at risk (code review 25 Oct). Only called
+        # with no position waiting for its 12 s sale, so every open trade here is a held one
+        held = led._one("SELECT coalesce(sum(cost), 0) FROM trades WHERE mode='live' AND status='open' AND ts >= ?", since)
+        if lost - held <= -MAX_DAY_LOSS:
+            return f"loss limit hit since {since} ({lost:+.2f} realised, {held:.2f} held at risk, cap {MAX_DAY_LOSS:g})"
         return None
 
     def _fak(self, token, side, price, size):

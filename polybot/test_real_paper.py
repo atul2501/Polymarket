@@ -154,6 +154,44 @@ class RealPaper(unittest.TestCase):
         finally:
             taker.SETTLE, taker.SKEW = saved
 
+    def test_hold_if_up(self):
+        # TK_HOLD_IF_UP: bid at the sell time >= entry (0.51) -> held to settlement (still open); below -> sold
+        saved = taker.HOLD_IF_UP
+        taker.HOLD_IF_UP = True
+        try:
+            up = run(lambda t: (0.55, 0.56) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50))
+            self.assertEqual(up.db.execute("SELECT status FROM trades").fetchall(), [("open",)])
+            down = run(lambda t: (0.40, 0.41) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50))
+            self.assertEqual(down.db.execute("SELECT status FROM trades").fetchall(), [("sold",)])
+        finally:
+            taker.HOLD_IF_UP = saved
+
+    def test_cheap_ask_queue(self):
+        # ask 0.08 < TK_CHEAP, TK_QUEUE_CHEAP=5: others take 4 x 14.29 first -> 60 offered leaves us 2.84, 50 leaves nothing
+        saved = taker.QUEUE_CHEAP
+        taker.QUEUE_CHEAP = 5
+        try:
+            self.assertEqual(taker.real_buy(0.12, Book(0.07, 60.0, 0.08, 60.0), 14.29), (2.84, 0.08))
+            self.assertEqual(taker.real_buy(0.12, Book(0.07, 50.0, 0.08, 50.0), 14.29), (0.0, 0.12))
+            self.assertEqual(taker.real_buy(0.54, Book(0.49, 60.0, 0.50, 60.0), 10)[0], 10)
+        finally:
+            taker.QUEUE_CHEAP = saved
+
+    def test_hold_min_and_max_holds(self):
+        # TK_HOLD_MIN 0.85: a 0.55 bid at the sell time is sold, not held (25 Oct 10:10: held at 0.55, lost $1.93)
+        saved = taker.HOLD_IF_UP, taker.HOLD_MIN, taker.MAX_HOLDS
+        taker.HOLD_IF_UP, taker.HOLD_MIN = True, 0.85
+        try:
+            mid = run(lambda t: (0.55, 0.56) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50))
+            self.assertEqual(mid.db.execute("SELECT status FROM trades").fetchall(), [("sold",)])
+            high = run(lambda t: (0.90, 0.91) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50))
+            self.assertEqual(high.db.execute("SELECT status FROM trades").fetchall(), [("open",)])
+            taker.MAX_HOLDS = 0                    # no room for another held position -> sold
+            full = run(lambda t: (0.90, 0.91) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50))
+            self.assertEqual(full.db.execute("SELECT status FROM trades").fetchall(), [("sold",)])
+        finally:
+            taker.HOLD_IF_UP, taker.HOLD_MIN, taker.MAX_HOLDS = saved
+
     def test_match_delay_from_live_ledger(self):
         from ledger import Ledger
         path = Path(tempfile.mkdtemp()) / "live.db"

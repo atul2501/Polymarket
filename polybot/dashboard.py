@@ -73,7 +73,9 @@ class Tracker:
 
     def __init__(self, path):
         self.path, self.log = path, path.with_suffix(".log")
-        self.t_last = self.b_last = SINCE
+        # None until the bot's first row after SINCE: a bot started later is measured from its own start (25 Oct: D-HY2
+        # began at 10:26 and showed "1.9% coverage, 11488 s hole" for the hours before it existed)
+        self.t_last = self.b_last = self.start = None
         self.rid = {"ticks": 0, "binance": 0}           # last rowid read: rows go in time order, rowid is indexed
         self.ticks = self.bn = self.gaps = self.bn_gaps = 0
         self.max_gap = self.bn_max_gap = 0.0
@@ -81,18 +83,24 @@ class Tracker:
         self.off = None
         self.c = collections.Counter()
 
-    def _scan(self, con, table, last):
+    def _scan(self, con, table, last, gap=GAP_SEC, ok=1.0):
+        """ok: an interval up to this long counts as covered. The signal feed (Deribit) can be silent for seconds when BTC
+        is quiet (no quote change = nothing to trade), so for it only silences over 5 s count as missing."""
         n = gaps = 0
         worst = miss = 0.0
         for rid, t in con.execute(f"SELECT rowid, t FROM {table} WHERE rowid > ? ORDER BY rowid", (self.rid[table],)):
             self.rid[table] = rid                      # 'WHERE t > ?' scanned the whole 100 MB table: 2.7 s per bot per refresh
-            if t <= last:
+            if t <= SINCE or (last is not None and t <= last):
+                continue
+            if last is None:                           # first row of the test for this bot: its start, not a gap
+                self.start = t if self.start is None else min(self.start, t)
+                last, n = t, n + 1
                 continue
             d = t - last
-            if d > GAP_SEC:
+            if d > gap:
                 gaps += 1
             worst = max(worst, d)
-            miss += max(0.0, d - 1.0)
+            miss += max(0.0, d - ok)
             last = t
             n += 1
         return n, gaps, worst, miss, last
@@ -100,7 +108,7 @@ class Tracker:
     def update(self, con):
         n, g, w, ms, self.t_last = self._scan(con, "ticks", self.t_last)
         self.ticks += n; self.gaps += g; self.max_gap = max(self.max_gap, w); self.miss += ms
-        n, g, w, ms, self.b_last = self._scan(con, "binance", self.b_last)
+        n, g, w, ms, self.b_last = self._scan(con, "binance", self.b_last, gap=5.0, ok=5.0)
         self.bn += n; self.bn_gaps += g; self.bn_max_gap = max(self.bn_max_gap, w); self.bn_miss += ms
         if not self.log.exists():
             return
@@ -123,8 +131,9 @@ class Tracker:
                     self.c[key.strip()] += 1
 
     def view(self, now):
-        el = max(1.0, min(now, SINCE + HOURS * 3600) - SINCE)
-        tail_gap = now - self.t_last                  # an ongoing hole counts too
+        t0 = self.start or now
+        el = max(1.0, min(now, SINCE + HOURS * 3600) - t0)
+        tail_gap = now - (self.t_last or now)         # an ongoing hole counts too
         gaps = self.gaps + (tail_gap > GAP_SEC)
         miss = self.miss + max(0.0, tail_gap - 1.0)
         return {"ticks": self.ticks, "tick_rate": self.ticks / el, "gaps": gaps,

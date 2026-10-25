@@ -29,7 +29,7 @@ from engine import taker_fee
 from market import MarketFeed
 from feedrace import DB, FEEDS, pct, series, signals
 
-CODE, RESP, COOLDOWN, MIN_LEFT, LO, HI, SPREAD, SIZE = 0.005, 0.03, 10, 30, 0.05, 0.95, 0.03, 10
+CODE, RESP, COOLDOWN, MIN_LEFT, LO, HI, SPREAD, SIZE = 0.005, 0.03, 10, 30, 0.05, 0.95, 0.03, 5   # 5 = bots' TK_SIZE
 
 
 class Poly:
@@ -94,6 +94,14 @@ def run(sig, poly, a, log=None):
             log and log(t, d, ask, limit, px, 1.0 if won else 0.0)
             continue
         te, end, sold = tm + RESP + a.hold, bk[1] + 300, None
+        if a.hold_if_up and bk[0] in poly.winner:              # D-HY: at the sell time a near-sure winner is held
+            bh = poly.at(te)
+            if bh and bh[0] == bk[0] and side_px(bh, d)[0] >= max(a.hold_min, px):
+                won = poly.winner[bk[0]] == d
+                trades.append((t, shares, shares * (won - px) - taker_fee(px, shares, fee), shares * px))
+                busy = te
+                log and log(t, d, ask, limit, px, 1.0 if won else 0.0)
+                continue
         while te < end and sold is None:                        # sale: decided on the bid at te, matches later
             be = poly.at(te)
             bs = poly.at(te + a.match) if be else None
@@ -211,6 +219,8 @@ def main():
     p.add_argument("--match", type=float, default=0.34)
     p.add_argument("--since", default="")
     p.add_argument("--settle", action="store_true")
+    p.add_argument("--hold-if-up", action="store_true", dest="hold_if_up", help="D-HY exit: hold if bid >= entry at the sell time")
+    p.add_argument("--hold-min", type=float, default=0, dest="hold_min", help="with --hold-if-up: only hold at or above this bid")
     p.add_argument("--skew", type=float, default=0, help="settle: max UP-DOWN share imbalance per round (0 = none)")
     p.add_argument("--spread", type=float, default=SPREAD, help="skip a signal when the side's ask - bid is wider")
     p.add_argument("--pair", type=float, default=0, help="settle: resting bid on the other side at pair - avg (0 = off)")
@@ -219,10 +229,11 @@ def main():
     p.add_argument("--list", action="store_true")
     p.add_argument("--sweep", action="store_true")
     p.add_argument("--quick", action="store_true", help="with --sweep: only the PAIR-BUILD block")
+    p.add_argument("--deribit", action="store_true", help="Deribit-only grid (live stays on Deribit, 25 Oct)")
     a = p.parse_args()
     a.lo, a.hi = map(float, a.band.split(","))
     db = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
-    poly = Poly(db, settle=a.settle or a.sweep)
+    poly = Poly(db, settle=a.settle or a.sweep or a.deribit or a.hold_if_up)
     since = datetime.fromisoformat(a.since).replace(tzinfo=timezone.utc).timestamp() if a.since else 0
     t0, t1 = poly.t[0], poly.t[-1]
     half = max(since, t0) + (t1 - max(since, t0)) / 2
@@ -239,6 +250,15 @@ def main():
         allr = fn(sig, poly, args)
         print(f"{label:44} all {summary(*allr)} | 1st {summary(*out[0])[-8:]} 2nd {summary(*out[1])[-8:]}")
 
+    if a.deribit:                                               # scalp holds vs hold-to-settle, on Deribit only
+        for bps, sec in ((0.5, 0.3), (1, 0.3), (1.5, 0.3), (0.5, 0.5), (1, 0.5), (1, 1), (1.5, 1), (2, 1), (1, 2)):
+            for hold in (5, 12, 20):
+                show(f"D scalp {bps}bp/{sec}s hold {hold}s", ["deribit"], bps, sec, hold=hold)
+            for lo, hi in ((0.05, 0.95), (0.10, 0.90)):
+                for sk in (10, 20, 0):
+                    show(f"D settle {bps}bp/{sec}s band {lo}-{hi} skew {sk or '-'}", ["deribit"], bps, sec,
+                         settle=True, cooldown=2, lo=lo, hi=hi, skew=sk)
+        return
     if a.sweep:
         for f in FEEDS:
             show(f"{f} 2bp/1s", [f], 2, 1)

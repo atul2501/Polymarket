@@ -51,7 +51,8 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-i
 .brand b { display: block; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
 .brand span { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .brand div { white-space: nowrap; }
-nav.sec { display: flex; gap: 2px; flex: none; }
+nav.sec { display: flex; gap: 2px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }   /* scrolls in place when the bar is narrow */
+nav.sec::-webkit-scrollbar { display: none; }
 nav.sec a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 9px; white-space: nowrap; border-radius: 8px; transition: color .2s, background .2s; }
 nav.sec a:hover, nav.sec a.on { color: var(--ink); background: var(--s2); }
 .grow { flex: 1; }
@@ -73,7 +74,10 @@ nav.sec a:hover, nav.sec a.on { color: var(--ink); background: var(--s2); }
 .stop span { position: relative; }
 
 /* ---------- layout */
-main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; padding: 28px 28px 72px; display: grid; gap: 44px; }
+main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; padding: 28px 28px 72px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; }
+/* a grid item defaults to min-width: auto, so a wide table (round by round, one column per bot) widened the whole page and
+   forced a sideways scroll; minmax(0, 1fr) + min-width: 0 keep it inside its own .scroll box */
+main > * { min-width: 0; }
 .sh { display: flex; align-items: baseline; gap: 12px; margin: 0 0 14px; flex-wrap: wrap; }
 .sh .n { font: 500 12px var(--mono); color: var(--faint); }
 .sh h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.025em; }
@@ -204,6 +208,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
 .rank { font: 500 12px var(--mono); color: var(--faint); width: 22px; }
 .tag { display: inline-block; font: 600 11px var(--sans); padding: 2px 7px; border-radius: 5px; }
 .tag.up { background: var(--up-bg); } .tag.down { background: var(--down-bg); } .tag.dim { background: var(--s2); color: var(--muted); }
+.tag.live { background: var(--down); color: #fff; letter-spacing: .04em; } .tag.paper { background: var(--s2); color: var(--muted); letter-spacing: .04em; }
 
 /* ---------- wallet */
 .wgrid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.15fr); gap: 32px; }
@@ -245,7 +250,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
 .offline { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--down); color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; display: none; z-index: 40; }
 
 @media (max-width: 1440px) { .brand span { display: none; } .run { min-width: 190px; } }
-@media (max-width: 1340px) { nav.sec { display: none; } }
+@media (max-width: 1000px) { nav.sec { display: none; } }
 @media (max-width: 1240px) { .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1000px) { .g31, .g11, .wgrid { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wgrid > div + div { border-left: 0; padding-left: 0; border-top: 1px solid var(--hair); padding-top: 20px; }
@@ -264,7 +269,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
       <div><b>Polybot</b><span>BTC up or down · 5 min</span></div>
     </a>
     <nav class="sec" aria-label="Sections">
-      <a href="#data">Data in</a><a href="#latency">Latency</a><a href="#pipeline">Pipeline</a><a href="#performance">Performance</a><a href="#wallet">Wallet</a><a href="#bots">Bots</a><a href="#integrity">Integrity</a>
+      <a href="#data">Data in</a><a href="#latency">Latency</a><a href="#pipeline">Pipeline</a><a href="#performance">Performance</a><a href="#wallet">Wallet</a><a href="#bots">Bots</a><a href="#rr">Rounds</a><a href="#integrity">Integrity</a>
     </nav>
     <div class="grow"></div>
     <div class="run"><div class="l"><span id="tlabel">Paper test</span><b id="tleft"></b></div><div class="track"><i id="tbar"></i></div></div>
@@ -350,7 +355,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
     <article class="panel"><div class="scroll"><table>
       <thead><tr><th></th><th style="text-align:left">Bot</th><th>P/L</th><th>Return</th><th>Money in</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Max drawdown</th><th>Trend</th></tr></thead>
       <tbody id="board"></tbody></table></div></article>
-    <article class="panel rr" style="margin-top:16px"><div class="ph"><div><h3>Round by round</h3><div class="cap">Every settled round of the test, newest first · P/L with $ spent underneath</div></div>
+    <article class="panel rr" id="rr" style="margin-top:16px"><div class="ph"><div><h3>Round by round</h3><div class="cap">Every settled round since the test start, newest first · each cell: P/L with $ spent underneath · times in your local time · hold-to-settle bots show a round 2-5 min after it ends</div></div>
         <button class="more" id="rrmore" aria-expanded="false" aria-controls="rrbox"></button></div>
       <div class="scroll rrbox" id="rrbox"><table><thead id="rhead"></thead><tbody id="rounds"></tbody></table></div></article>
     <div style="margin-top:16px">
@@ -360,11 +365,11 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="integrity">
-    <div class="sh"><span class="n">07</span><h2>Data integrity</h2><p>Proof that every bot recorded the market without holes, for the whole test</p></div>
+    <div class="sh"><span class="n">07</span><h2>Data integrity</h2><p>One check for all bots: they all trade on the same Polymarket book and Deribit feed</p></div>
     <article class="panel">
       <div class="verdict" id="verdict"><span class="sk" style="width:40%"></span></div>
       <div class="scroll"><table>
-        <thead><tr><th>Bot</th><th>Book snapshots</th><th>Per second</th><th>Book coverage</th><th>Gaps &gt; 2 s</th><th>Longest gap</th><th>Deribit coverage</th><th>Deribit gaps</th><th>Reconnects</th><th>Rounds traded</th></tr></thead>
+        <thead><tr><th>Data</th><th>Book snapshots</th><th>Per second</th><th>Book coverage</th><th>Gaps &gt; 2 s</th><th>Longest gap</th><th>Deribit coverage</th><th>Deribit gaps</th><th>Reconnects</th><th>Recorded for</th></tr></thead>
         <tbody id="integ"></tbody></table></div>
       <div class="note" id="integnote"></div>
     </article>
@@ -375,11 +380,12 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
 <script>
 const $ = id => document.getElementById(id);
 const SLOTS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
-const RULES = { "Live-D": "REAL money · Deribit 1 bp in 0.3 s · sell after 12 s", "Paper-D": "Paper twin of Live-D",
-  "W-3bp-D": "Wallet rule on Deribit · 3 bp in 3 s · hold to settle",
-  "W-B": "Wallet-style · Binance 1 bp in 5 s · hold to settle · max 20 one-sided", "W-Y": "Wallet-style · Bybit 0.5 bp in 3 s · hold to settle · max 20 one-sided",
-  "W-B3": "Wallet-style · Binance 1 bp in 3 s · hold to settle · max 20 one-sided", "W-Y3": "Wallet-style · Bybit 1 bp in 3 s · hold to settle · max 20 one-sided", "W-3bp": "Wallet rule · 3 bp move · hold to settle", "W-0.5": "Wallet rule · 0.5 bp move · hold to settle",
-  "T-0.3": "Fast taker · 2 bp · sell after 5 s", "T-0.1": "Fast taker · 0.1 s reaction (server estimate)", "T-3bp": "Fast taker · 3 bp · sell after 5 s" };
+// LIVE (real money) or PAPER badge after a bot's name; live bots are named "Live-..." (deploy/polybot-dash.service)
+const MODETAG = n => n.startsWith("Live") ? ' <span class="tag live">LIVE</span>' : ' <span class="tag paper">PAPER</span>';
+const RULES = { "Live-D": "REAL money · Deribit 1 bp in 0.3 s · sell after 12 s", "Paper-D": "Paper twin of Live-D (same settings)",
+  "D-S03": "Deribit 0.5 bp/0.3 s · hold to settle · max 20 one-sided",
+  "D-S03N": "Deribit 0.5 bp/0.3 s · hold to settle · no cap (best Deribit setting in replay)",
+  "D-HY2": "Deribit 1 bp/0.3 s · at 12 s hold only if bid >= 0.85 (max 2 held per round), else sell" };
 let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false, TAPE_TOP = 0, RR_OPEN = false;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const money = v => v == null ? "—" : (v >= 0 ? "+$" : "−$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -469,7 +475,7 @@ function render(d) {
     stage("C", "Paper buys", buys.toLocaleString(), signals ? `${(buys / signals * 100).toFixed(0)}% of signals taken; the rest had no good price or size` : "Waiting for the first signal", buys > 0) +
     stage("D", "Open positions", open.toLocaleString(), `$${atRisk.toFixed(2)} waiting for the round to settle`, open > 0) +
     stage("E", "Settled", settled.toLocaleString(), settled ? `<span class="${cls(pnl)}">${money(pnl)}</span> · ${(won / settled * 100).toFixed(0)}% of trades won` : "No settled trades yet", settled > 0);
-  $("pipetable").innerHTML = bots.map((b, i) => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(b.name)}"></span><span><b>${esc(b.name)}</b><small>${esc(RULES[b.name] || "")}</small></span></span></td>
+  $("pipetable").innerHTML = bots.map((b, i) => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(b.name)}"></span><span><b>${esc(b.name)}${MODETAG(b.name)}</b><small>${esc(RULES[b.name] || "")}</small></span></span></td>
     <td class="num">${I[i].signals.toLocaleString()}</td><td class="num">${I[i].buys.toLocaleString()}</td>
     <td class="num">${I[i].signals ? (I[i].buys / I[i].signals * 100).toFixed(0) + "%" : "—"}</td><td class="num">${b.open_n}</td>
     <td class="num">${b.trades}</td><td class="num">${b.win_rate == null ? "—" : (b.win_rate * 100).toFixed(0) + "%"}</td>
@@ -518,7 +524,7 @@ function render(d) {
   const hold = (open, side) => { const o = open.filter(x => x.side === side), n = o.reduce((a, x) => a + x.shares, 0);
     return n ? `<span class="num">${Math.round(n).toLocaleString()}</span> <span class="muted num">@ ${(o.reduce((a, x) => a + x.shares * x.price, 0) / n).toFixed(2)}</span>` : `<span class="muted">—</span>`; };
   const wl = w.live, wopen = wl ? [["Up", wl.Up], ["Down", wl.Down]].filter(([, a]) => a[0]).map(([side, a]) => ({side, shares: a[0], price: a[1] / a[0]})) : [];
-  const prow = (name, open, inn) => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(name)};height:18px"></span><b>${esc(name)}</b></span></td>
+  const prow = (name, open, inn) => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(name)};height:18px"></span><b>${esc(name)}${bots.some(b => b.name === name) ? MODETAG(name) : ""}</b></span></td>
     <td>${hold(open, "Up")}</td><td>${hold(open, "Down")}</td><td class="num">${inn ? (inn < 100 ? usd2(inn) : usd0(inn)) : '<span class="muted">flat</span>'}</td></tr>`;
   $("live").innerHTML = prow("Copied wallet", wopen, wl ? wl.Up[1] + wl.Down[1] : 0) + bots.map(b => prow(b.name, b.open, b.open.reduce((a, x) => a + x.cost, 0))).join("");
   $("livecap").textContent = wl && wl.last ? `Wallet's last fill ${hms(wl.last)}` : "Open positions right now";
@@ -527,13 +533,13 @@ function render(d) {
 
   // 05 bots
   $("board").innerHTML = [...bots].sort((a, b) => b.pnl - a.pnl).map((b, i) => `<tr><td class="rank">${i + 1}</td>
-    <td style="text-align:left"><span class="who"><span class="bar" style="background:${colorOf(b.name)}"></span><span><b>${esc(b.name)}${b.running ? "" : ' <span class="tag down">stopped</span>'}</b><small>${esc(RULES[b.name] || "")}</small></span></span></td>
+    <td style="text-align:left"><span class="who"><span class="bar" style="background:${colorOf(b.name)}"></span><span><b>${esc(b.name)}${MODETAG(b.name)}${b.running ? "" : ' <span class="tag down">stopped</span>'}</b><small>${esc(RULES[b.name] || "")}</small></span></span></td>
     <td class="num ${cls(b.pnl)}">${money(b.pnl)}</td><td>${b.ret == null ? '<span class="muted">—</span>' : `<span class="delta num ${cls(b.ret)}">${pct(b.ret)}</span>`}</td>
     <td class="num">${b.cost < 100 ? usd2(b.cost) : usd0(b.cost)}</td><td class="num">${b.trades}${b.open_n ? ` <span class="muted">+${b.open_n} open</span>` : ""}</td>
     <td class="num">${b.win_rate == null ? "—" : (b.win_rate * 100).toFixed(1) + "%"}</td><td class="num up">${b.avg_win == null ? "—" : money(b.avg_win)}</td>
     <td class="num down">${b.avg_loss == null ? "—" : money(b.avg_loss)}</td><td class="num down">${b.max_dd ? money(b.max_dd) : "—"}</td>
     <td>${spark(b.series, colorOf(b.name))}</td></tr>`).join("");
-  $("rhead").innerHTML = `<tr><th>Round</th><th>Winner</th><th>Wallet</th>${bots.map(b => `<th><span style="color:${colorOf(b.name)}">●</span> ${esc(b.name)}</th>`).join("")}</tr>`;
+  $("rhead").innerHTML = `<tr><th>Round</th><th>Winner</th><th>Wallet</th>${bots.map(b => `<th><span style="color:${colorOf(b.name)}">●</span> ${esc(b.name)}${MODETAG(b.name)}</th>`).join("")}</tr>`;
   const WR = Object.fromEntries((w.rounds || []).map(r => [r.start, r]));   // rows: every round the wallet or any bot settled
   const RW = [...new Set([...Object.keys(WR).map(Number), ...bots.flatMap(b => Object.keys(b.by_round).map(e => e - 300))])]
     .sort((a, b) => b - a).map(s => WR[s] || {start: s});
@@ -554,27 +560,27 @@ function render(d) {
   $("filters").innerHTML = names.map(n => `<button class="${n === FILTER ? "on" : ""}" data-f="${esc(n)}">${esc(n)}</button>`).join("");
   document.querySelectorAll("#filters button").forEach(b => b.onclick = () => { FILTER = b.dataset.f; render(LAST); });
   $("feed").innerHTML = (d.feed || []).filter(x => FILTER === "All" || x.bot === FILTER).map(x => `<div class="fi"><span class="num muted">${hms(x.t)}</span>
-    <span><span class="bot"><i style="background:${colorOf(x.bot)}"></i>${esc(x.bot)}</span>Buy <b class="${x.side === "Up" ? "up" : "down"}">${x.side.toUpperCase()}</b> <span class="num">${x.shares} @ ${cents(x.price)}</span></span>
+    <span><span class="bot"><i style="background:${colorOf(x.bot)}"></i>${esc(x.bot)}${MODETAG(x.bot)}</span>Buy <b class="${x.side === "Up" ? "up" : "down"}">${x.side.toUpperCase()}</b> <span class="num">${x.shares} @ ${cents(x.price)}</span></span>
     <span>${x.status === "open" ? '<span class="tag dim">open</span>' : `<span class="num ${cls(x.pnl)}">${money(x.pnl)}</span>`}</span></div>`).join("") || `<div class="empty">No trades yet in this test</div>`;
 
   // 06 integrity
   if (I.length) {
-    // a live bot runs with TK_RECORD=0 (no books/Binance written, its paper twin records them): leave it out
-    const R = I.filter(x => x.ticks > 0), RR = R.length ? R : I;
-    const worstCov = Math.min(...RR.map(x => x.coverage)), worstBn = Math.min(...RR.map(x => x.bn_coverage)), gaps = RR.reduce((a, x) => a + x.gaps, 0);
-    const maxGap = Math.max(...RR.map(x => x.max_gap)), rec = sum((b, i) => i.reconnects);
+    // every bot trades on the SAME data (one Polymarket book, one Deribit feed), so show one row: the bot that has
+    // recorded the longest (the live bot doesn't record; paper bots started later cover less time)
+    const src = I.map((x, i) => [x, bots[i]]).filter(([x]) => x.ticks > 0).sort((a, b) => b[0].elapsed - a[0].elapsed)[0];
+    const x = src ? src[0] : I[0], gaps = x.gaps, worstCov = x.coverage, worstBn = x.bn_coverage, maxGap = x.max_gap, rec = x.reconnects;
     const level = worstCov >= 99.9 && worstBn >= 99.5 && gaps === 0 ? "ok" : worstCov >= 99 ? "minor" : "bad";
     const icon = {ok: '<path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
       minor: '<path d="M8 4v5M8 11.5v.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/>', bad: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>'}[level];
     $("verdict").className = "verdict " + level;
-    $("verdict").innerHTML = `<span class="ic"><svg width="16" height="16" viewBox="0 0 16 16">${icon}</svg></span><div><b>${level === "ok" ? "No data loss" : level === "minor" ? "Minor gaps, results still valid" : "Data loss detected"}</b>
-      <span>Order book recorded ${worstCov.toFixed(2)}% of the time (worst bot) · Deribit ${worstBn.toFixed(2)}% · ${gaps} book gap${gaps === 1 ? "" : "s"} longer than ${d.gap_sec} s · longest hole ${maxGap.toFixed(1)} s · ${rec} feed reconnect${rec === 1 ? "" : "s"}, all recovered</span></div>`;
+    $("verdict").innerHTML = `<span class="ic"><svg width="16" height="16" viewBox="0 0 16 16">${icon}</svg></span><div><b>${level === "ok" ? "Data is complete" : level === "minor" ? "Minor gaps, results still valid" : "Data loss detected"}</b>
+      <span>Polymarket order book recorded ${worstCov.toFixed(2)}% of the time · Deribit ${worstBn.toFixed(2)}% · ${gaps} book gap${gaps === 1 ? "" : "s"} longer than ${d.gap_sec} s · longest hole ${maxGap.toFixed(1)} s · ${rec} feed reconnect${rec === 1 ? "" : "s"}, all recovered</span></div>`;
     const covCell = v => `<span class="cov"><span class="m"><i style="width:${Math.max(2, Math.min(100, (v - 95) / 5 * 100))}%;background:${v >= 99.9 ? "var(--up)" : v >= 99 ? "var(--warn)" : "var(--down)"}"></i></span><span class="num">${v.toFixed(2)}%</span></span>`;
-    $("integ").innerHTML = bots.map((b, i) => { const x = I[i]; return `<tr><td><span class="who"><span class="bar" style="background:${colorOf(b.name)};height:18px"></span><b>${esc(b.name)}</b></span></td>
-      ${!x.ticks && R.length ? '<td colspan="7" class="dim">not recorded here (live bot; its paper twin records the market)</td>' : `<td class="num">${x.ticks.toLocaleString()}</td><td class="num">${x.tick_rate.toFixed(1)}</td><td>${covCell(x.coverage)}</td>
+    $("integ").innerHTML = `<tr><td><b>Market data</b><small style="display:block;color:var(--muted)">shared by all bots${src ? " · recorded by " + esc(src[1].name) : ""}</small></td>
+      <td class="num">${x.ticks.toLocaleString()}</td><td class="num">${x.tick_rate.toFixed(1)}</td><td>${covCell(x.coverage)}</td>
       <td class="num ${x.gaps ? "warn" : ""}">${x.gaps}</td><td class="num">${x.max_gap.toFixed(1)} s</td><td>${covCell(x.bn_coverage)}</td>
-      <td class="num ${x.bn_gaps ? "warn" : ""}">${x.bn_gaps}</td>`}<td class="num">${x.reconnects}</td><td class="num">${b.rounds_traded}</td></tr>`; }).join("");
-    $("integnote").textContent = `Coverage = the share of the ${dur(I[0].elapsed)} since the start in which the bot had fresh data; any hole longer than 1 s counts as missing. Deribit = the trigger feed of every bot (it sends fewer updates when BTC is quiet, so a short gap there is usually silence, not lost data). Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
+      <td class="num ${x.bn_gaps ? "warn" : ""}">${x.bn_gaps}</td><td class="num">${x.reconnects}</td><td class="num">${dur(x.elapsed)}</td></tr>`;
+    $("integnote").textContent = `Coverage = the share of the ${dur(x.elapsed)} recorded in which the data was fresh; any hole longer than 1 s counts as missing. Deribit = the trigger feed of every bot; it is silent when BTC doesn't move, so only silences over 5 s count as gaps there. Each bot is measured from its own first recording. Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
   }
   drawChart();
 }

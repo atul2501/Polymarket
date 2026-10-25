@@ -48,6 +48,14 @@ SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown app
 # TK_SKEW (settle): max one-sided shares per round. The copied wallet's pairs earn (+$540 in 23 rounds 25 Oct) and its
 # one-sided extras lose (-$228); racesim: capping the imbalance at 20 kept the pairs and cut the extras.
 SKEW = _f("TK_SKEW", 0)
+# TK_HOLD_IF_UP: at the sell time, a position whose bid is at or above its entry price is held to settlement instead of
+# sold (the settler books it); a losing one is sold as before. Live-D's 12 s scalp lost most on BTC reversals inside the
+# hold (25 Oct: -2.38, -1.64, -1.78) while the copied wallet earns by holding to settlement. LIVE: settled winning
+# shares must be redeemed on Polymarket (Portfolio -> Claim); the bot does not redeem.
+HOLD_IF_UP = os.getenv("TK_HOLD_IF_UP", "0") != "0"
+# corrected after the live test (25 Oct 09:43-10:23: held a 0.55 bid and lost $1.93): hold only when the bid is at least
+# TK_HOLD_MIN (a near-certain winner), and never more than TK_MAX_HOLDS open held positions in one round
+HOLD_MIN, MAX_HOLDS = _f("TK_HOLD_MIN", 0), int(_f("TK_MAX_HOLDS", 99))
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
@@ -67,6 +75,9 @@ PAD = _f("TK_SLIP", 0.02)                    # limit = ask + PAD on buys, bid - 
 # queue: QUEUE x our shares must sit at the price for a fill (others ahead of us take the rest).
 MATCH_FROM = os.getenv("TK_MATCH_FROM", "")  # a live ledger: match delay = 75th pct of its last 30 order calls - 25 ms
 QUEUE = _f("TK_QUEUE", 1)
+# cheap asks are raced hardest: 25 Oct paper filled DOWN at 0.06 and 0.09 (+$7.41) where live's orders found them gone;
+# below TK_CHEAP the queue margin is TK_QUEUE_CHEAP x our shares
+CHEAP, QUEUE_CHEAP = _f("TK_CHEAP", 0.15), _f("TK_QUEUE_CHEAP", 0)
 _match = {"t": 0.0, "v": MATCH_DELAY}
 
 
@@ -126,7 +137,8 @@ def real_buy(limit, book, planned):
     """Paper FAK BUY at matching time: (shares, price) filled from the best ask, or (0, limit) when killed."""
     if book is None or book.ask is None or book.ask > limit + 1e-9:
         return 0.0, limit
-    got = math.floor(min(planned, book.ask_size - (QUEUE - 1) * planned) * 100) / 100
+    q = QUEUE_CHEAP if QUEUE_CHEAP and book.ask < CHEAP else QUEUE
+    got = math.floor(min(planned, book.ask_size - (q - 1) * planned) * 100) / 100
     return (got, book.ask) if got >= 1 else (0.0, limit)
 
 
@@ -134,7 +146,8 @@ def real_sell(limit, book, left):
     """Paper FAK SELL at matching time: (shares, price) filled from the best bid, or (0, limit) when killed."""
     if book is None or book.bid is None or book.bid < limit - 1e-9:
         return 0.0, limit
-    got = math.floor(min(left, book.bid_size - (QUEUE - 1) * left) * 100) / 100
+    q = QUEUE_CHEAP if QUEUE_CHEAP and book.bid < CHEAP else QUEUE   # cheap bids are raced as hard as cheap asks
+    got = math.floor(min(left, book.bid_size - (q - 1) * left) * 100) / 100
     return (got, book.bid) if got >= 0.01 else (0.0, limit)
 
 
@@ -233,7 +246,13 @@ def live():
                 if pos and pos[1].slug == m.slug and now >= pos[3]:
                     pid, _, side, _, left, got = pos
                     bid = side_book[side].bid
-                    if bid is not None and REAL and pid not in sell_plan:
+                    if (HOLD_IF_UP and not got and pid not in sell_plan and bid is not None
+                            and bid >= max(HOLD_MIN, led._one("SELECT price FROM trades WHERE id=?", pid))
+                            and led._one("SELECT count(*) FROM trades WHERE slug=? AND status='open' AND id!=?",
+                                         m.slug, pid) < MAX_HOLDS):
+                        log.info("[BTC 5m] HOLD %s to settlement: bid %.2f >= entry", side, bid)
+                        pos = None                     # stays open in the ledger; the settler books it at round end
+                    elif bid is not None and REAL and pid not in sell_plan:
                         sell_plan[pid] = round(max(bid - PAD, 0.01), 2)   # decided on this bid; it matches MATCH_DELAY later
                         pos = (pid, m, side, now + match_delay(), left, got)
                     elif bid is not None:
