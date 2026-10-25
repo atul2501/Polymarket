@@ -9,8 +9,9 @@ User=ec2-user
 WorkingDirectory=/home/ec2-user/poly/polybot
 EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
 EnvironmentFile=/home/ec2-user/poly/polybot/deploy/dfast.env
-# honest paper: match delay from live's recent order calls, 2x our size must sit at the price (others ahead of us)
-Environment=TK_LEDGER=runs/d-fast.db TK_MATCH_FROM=runs/live-d.db TK_QUEUE=2 TK_QUEUE_CHEAP=5 PYTHONUNBUFFERED=1
+# honest paper, calibrated 25 Oct on 427 live orders: order meets the book 0.8 s after the signal, 5x our shares must sit
+# at the price -> same fill rate as live (36%), 81% same outcome
+Environment=TK_LEDGER=runs/d-fast.db TK_MATCH_DELAY=0.8 TK_QUEUE=5 TK_QUEUE_CHEAP=5 PYTHONUNBUFFERED=1
 ExecStart=/home/ec2-user/venv/bin/python taker.py
 Restart=always
 RestartSec=10

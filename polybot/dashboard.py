@@ -193,7 +193,8 @@ def bot_state(name, db_name):
         "by_round": {e: [round(p, 2), round(k, 2)] for e, p, k in con.execute(   # every settled round: [P/L, $ spent]
                      "SELECT window_end, sum(pnl), sum(cost) FROM trades WHERE status!='open' AND window_end > ?"
                      " GROUP BY window_end", (SINCE,))},
-        "open": [{"side": r[1], "price": r[2], "shares": r[3], "cost": r[6]} for r in rows if r[5] == "open"],
+        # end: the round's end, so the page can tell this round's positions from ended ones waiting for settlement
+        "open": [{"side": r[1], "price": r[2], "shares": r[3], "cost": r[6], "end": r[7]} for r in rows if r[5] == "open"],
         "feed": [{"bot": name, "t": utc(r[0]), "side": r[1], "price": r[2], "shares": r[3], "status": r[5],
                   "pnl": r[4]} for r in rows[-30:]],
         "tick": dict(zip(["t", "slug", "t_left", "up_bid", "up_ask", "dn_bid", "dn_ask"], tick)) if tick else None,

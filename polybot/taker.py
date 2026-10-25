@@ -56,6 +56,9 @@ HOLD_IF_UP = os.getenv("TK_HOLD_IF_UP", "0") != "0"
 # corrected after the live test (25 Oct 09:43-10:23: held a 0.55 bid and lost $1.93): hold only when the bid is at least
 # TK_HOLD_MIN (a near-certain winner), and never more than TK_MAX_HOLDS open held positions in one round
 HOLD_MIN, MAX_HOLDS = _f("TK_HOLD_MIN", 0), int(_f("TK_MAX_HOLDS", 99))
+# TK_MAX_HELD_USD: total money in held positions (all rounds) never above this; e.g. 5 with $5 trades = one hold at a time,
+# so a hold can never cost more than ~$5 (user, 25 Oct: "hold to settlement only with a small amount")
+MAX_HELD_USD = _f("TK_MAX_HELD_USD", 0)
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
@@ -249,7 +252,9 @@ def live():
                     if (HOLD_IF_UP and not got and pid not in sell_plan and bid is not None
                             and bid >= max(HOLD_MIN, led._one("SELECT price FROM trades WHERE id=?", pid))
                             and led._one("SELECT count(*) FROM trades WHERE slug=? AND status='open' AND id!=?",
-                                         m.slug, pid) < MAX_HOLDS):
+                                         m.slug, pid) < MAX_HOLDS
+                            and (not MAX_HELD_USD or led._one(
+                                "SELECT coalesce(sum(cost), 0) FROM trades WHERE status='open'") <= MAX_HELD_USD + 1e-9)):
                         log.info("[BTC 5m] HOLD %s to settlement: bid %.2f >= entry", side, bid)
                         pos = None                     # stays open in the ledger; the settler books it at round end
                     elif bid is not None and REAL and pid not in sell_plan:

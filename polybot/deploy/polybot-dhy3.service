@@ -1,0 +1,19 @@
+# D-HY3 (paper side-run): Deribit 0.8 bp in 0.3 s, decide at 20 s: hold to settlement if bid >= 0.85 (max 2 per round),
+# else sell. racesim 25 Oct 8.2 h @5 sh: +7.9%/$, +$60.07 (most $), both halves + vs live D-HY2 +10.1%/$, +$49.90.
+# All settings inline: values in an EnvironmentFile override Environment= lines, so dfast.env would undo them.
+[Unit]
+Description=polybot D-HY3 side-run (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
+Environment=TK_LEDGER=runs/d-hy3.db BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.8 TK_MOVE_SEC=0.3 TK_HOLD=20 TK_SIZE=5 TK_MAX_TRADE_USD=5 TK_MAX_DAY_LOSS=20 TK_HOLD_IF_UP=1 TK_HOLD_MIN=0.85 TK_MAX_HOLDS=2 TK_MATCH_DELAY=0.8 TK_QUEUE=5 TK_QUEUE_CHEAP=5 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

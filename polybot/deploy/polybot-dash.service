@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 User=ec2-user
 WorkingDirectory=/home/ec2-user/poly/polybot
-Environment=DASH_BOTS=Live-D=live-d.db,Paper-D=d-fast.db,D-HY2=d-hy2.db,D-S03=d-s03.db,D-S03N=d-s03n.db DASH_HOURS=168 "DASH_MARK=taker start" "DASH_SINCE=2026-10-25 07:15" DASH_SIGNAL=deribit
+Environment=DASH_BOTS=Live-D=live-d.db,Paper-D=d-fast.db,D-HY2=d-hy2.db,D-HY3=d-hy3.db,D-S03=d-s03.db,D-S03N=d-s03n.db DASH_HOURS=168 "DASH_MARK=taker start" "DASH_SINCE=2026-10-25 07:15" DASH_SIGNAL=deribit
 # DASH_SINCE (server time = UTC): when live trading started; fixed so a dashboard restart never resets the totals
 # optional public access: ~/.polybot-dash with DASH_HOST=0.0.0.0, DASH_USER, DASH_PASS (chmod 600; open the port
 # in the security group for your own IP only)

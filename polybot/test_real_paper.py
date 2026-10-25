@@ -192,6 +192,19 @@ class RealPaper(unittest.TestCase):
         finally:
             taker.HOLD_IF_UP, taker.HOLD_MIN, taker.MAX_HOLDS = saved
 
+    def test_max_held_usd(self):
+        # TK_MAX_HELD_USD below this position's cost -> no room to hold it, so it is sold at the sell time
+        saved = taker.HOLD_IF_UP, taker.MAX_HELD_USD
+        taker.HOLD_IF_UP = True
+        try:
+            book = lambda t: (0.90, 0.91) if t >= SIGNAL_AT + 5 else (0.49, 0.51) if t >= SIGNAL_AT + 0.2 else (0.49, 0.50)
+            taker.MAX_HELD_USD = 1.0                    # 5 shares x 0.51 = $2.55 + fee > $1
+            self.assertEqual(run(book).db.execute("SELECT status FROM trades").fetchall(), [("sold",)])
+            taker.MAX_HELD_USD = 5.0                    # fits -> held
+            self.assertEqual(run(book).db.execute("SELECT status FROM trades").fetchall(), [("open",)])
+        finally:
+            taker.HOLD_IF_UP, taker.MAX_HELD_USD = saved
+
     def test_match_delay_from_live_ledger(self):
         from ledger import Ledger
         path = Path(tempfile.mkdtemp()) / "live.db"

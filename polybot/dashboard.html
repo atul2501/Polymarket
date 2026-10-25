@@ -34,7 +34,7 @@
   --shadow: 0 1px 2px rgba(15,23,42,.05), 0 12px 32px -18px rgba(15,23,42,.18); } }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+html { scroll-behavior: smooth; scroll-padding-top: 124px; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
 body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
@@ -45,13 +45,13 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-i
 
 /* ---------- header */
 .top { position: sticky; top: 0; z-index: var(--z-head); background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: saturate(140%) blur(14px); border-bottom: 1px solid var(--hair); }
-.top-in { max-width: 1360px; margin: 0 auto; padding: 0 28px; height: 64px; display: flex; align-items: center; gap: 24px; }
+.top-in { max-width: 1360px; margin: 0 auto; padding: 10px 28px 0; min-height: 64px; display: flex; flex-wrap: wrap; align-items: center; column-gap: 24px; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; flex: none; }
 .brand svg { width: 30px; height: 30px; flex: none; }
 .brand b { display: block; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
 .brand span { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .brand div { white-space: nowrap; }
-nav.sec { display: flex; gap: 2px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }   /* scrolls in place when the bar is narrow */
+nav.sec { display: flex; gap: 2px; order: 10; flex: 1 0 100%; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 0 0 8px; margin-top: -6px; }   /* own row under the status bar: all links fit */
 nav.sec::-webkit-scrollbar { display: none; }
 nav.sec a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 9px; white-space: nowrap; border-radius: 8px; transition: color .2s, background .2s; }
 nav.sec a:hover, nav.sec a.on { color: var(--ink); background: var(--s2); }
@@ -88,7 +88,7 @@ main > * { min-width: 0; }
 .panel .cap { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .ph { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
 .g4 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.25fr); gap: 16px; }
-.g31 { display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(0, 1fr); gap: 16px; }
+.g31 { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 16px; }
 .g11 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
 
@@ -200,11 +200,13 @@ th { text-align: right; font: 500 12px var(--sans); color: var(--muted); padding
 td { text-align: right; padding: 11px 12px; border-bottom: 1px solid var(--hair); white-space: nowrap; font-size: 13px; transition: background .2s; }
 th:first-child, td:first-child { text-align: left; padding-left: 0; } th:last-child, td:last-child { padding-right: 0; }
 tbody tr:last-child td { border-bottom: 0; }
+#live td, #board td, #board ~ th { padding-left: 8px; padding-right: 8px; }   /* tighter so these tables fit their panels */
+#live td:first-child, #board td:first-child { padding-left: 0; } #live td:last-child, #board td:last-child { padding-right: 0; }
 tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); }
 .who { display: flex; align-items: center; gap: 10px; }
 .who .bar { width: 3px; height: 26px; border-radius: 2px; flex: none; }
 .who b { display: block; font-weight: 600; font-size: 13px; }
-.who small { display: block; font-size: 12px; color: var(--muted); }
+.who small { display: block; font-size: 12px; color: var(--muted); white-space: normal; max-width: 340px; }   /* long bot descriptions wrap instead of widening the table */
 .rank { font: 500 12px var(--mono); color: var(--faint); width: 22px; }
 .tag { display: inline-block; font: 600 11px var(--sans); padding: 2px 7px; border-radius: 5px; }
 .tag.up { background: var(--up-bg); } .tag.down { background: var(--down-bg); } .tag.dim { background: var(--s2); color: var(--muted); }
@@ -382,10 +384,11 @@ const $ = id => document.getElementById(id);
 const SLOTS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
 // LIVE (real money) or PAPER badge after a bot's name; live bots are named "Live-..." (deploy/polybot-dash.service)
 const MODETAG = n => n.startsWith("Live") ? ' <span class="tag live">LIVE</span>' : ' <span class="tag paper">PAPER</span>';
-const RULES = { "Live-D": "REAL money · Deribit 1 bp in 0.3 s · sell after 12 s", "Paper-D": "Paper twin of Live-D (same settings)",
+const RULES = { "Live-D": "REAL money · scalp (sell after 12 s) + small hold: if bid >= 0.85, hold to settlement, max $5 held", "Paper-D": "Plain scalp on paper (sell after 12 s) · reference for the small hold",
   "D-S03": "Deribit 0.5 bp/0.3 s · hold to settle · max 20 one-sided",
   "D-S03N": "Deribit 0.5 bp/0.3 s · hold to settle · no cap (best Deribit setting in replay)",
-  "D-HY2": "Deribit 1 bp/0.3 s · at 12 s hold only if bid >= 0.85 (max 2 held per round), else sell" };
+  "D-HY2": "Deribit 1 bp/0.3 s · at 12 s hold if bid >= 0.85 (max 2/round), else sell",
+  "D-HY3": "Side-run · Deribit 0.8 bp/0.3 s · decide at 20 s: hold if bid >= 0.85, else sell" };
 let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false, TAPE_TOP = 0, RR_OPEN = false;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const money = v => v == null ? "—" : (v >= 0 ? "+$" : "−$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -524,9 +527,16 @@ function render(d) {
   const hold = (open, side) => { const o = open.filter(x => x.side === side), n = o.reduce((a, x) => a + x.shares, 0);
     return n ? `<span class="num">${Math.round(n).toLocaleString()}</span> <span class="muted num">@ ${(o.reduce((a, x) => a + x.shares * x.price, 0) / n).toFixed(2)}</span>` : `<span class="muted">—</span>`; };
   const wl = w.live, wopen = wl ? [["Up", wl.Up], ["Down", wl.Down]].filter(([, a]) => a[0]).map(([side, a]) => ({side, shares: a[0], price: a[1] / a[0]})) : [];
-  const prow = (name, open, inn) => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(name)};height:18px"></span><b>${esc(name)}${bots.some(b => b.name === name) ? MODETAG(name) : ""}</b></span></td>
+  const prow = (name, open, inn, note = "") => `<tr><td><span class="who"><span class="bar" style="background:${colorOf(name)};height:18px"></span><b>${esc(name)}${bots.some(b => b.name === name) ? MODETAG(name) : ""}${note}</b></span></td>
     <td>${hold(open, "Up")}</td><td>${hold(open, "Down")}</td><td class="num">${inn ? (inn < 100 ? usd2(inn) : usd0(inn)) : '<span class="muted">flat</span>'}</td></tr>`;
-  $("live").innerHTML = prow("Copied wallet", wopen, wl ? wl.Up[1] + wl.Down[1] : 0) + bots.map(b => prow(b.name, b.open, b.open.reduce((a, x) => a + x.cost, 0))).join("");
+  // this round's positions in the row; positions of rounds that already ended (held to settlement, waiting for the
+  // official result) go in a note under the name, valued at the ended round's closing price (~1 for the winner)
+  $("live").innerHTML = prow("Copied wallet", wopen, wl ? wl.Up[1] + wl.Down[1] : 0) + bots.map(b => {
+    const cur = b.open.filter(x => !x.end || x.end > now), wait = b.open.filter(x => x.end && x.end <= now);
+    const c = wait.reduce((a, x) => a + x.cost, 0), sh = wait.reduce((a, x) => a + x.shares, 0);
+    // ended rounds waiting for Polymarket's official result: a small badge, details on hover
+    const note = wait.length ? ` <span class="tag dim" title="${wait.length} waiting for settlement · ${usd2(c)} in · pays ${usd2(sh)} if ${wait.length > 1 ? "they win" : "it wins"}">⏳ ${wait.length}</span>` : "";
+    return prow(b.name, cur, cur.reduce((a, x) => a + x.cost, 0), note); }).join("");
   $("livecap").textContent = wl && wl.last ? `Wallet's last fill ${hms(wl.last)}` : "Open positions right now";
 
   renderWallet(w, now);
