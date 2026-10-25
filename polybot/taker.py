@@ -49,6 +49,8 @@ LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
     DELAY_SEC = 0.0                          # real orders pay the real network delay, no simulated one
+# books/Binance/prints for replays, committed every pass; off by default when live (a paper twin records them)
+RECORD = os.getenv("TK_RECORD", "0" if LIVE else "1") != "0"
 # TK_REAL=1: paper fills follow the execution measured live on 23 Oct 2026 (Stockholm), see realistic.env:
 # decide CODE_DELAY after the signal, the order matches MATCH_DELAY later against the book of THAT moment (a taker
 # delay of ~150 ms + the trip), is killed when the ask ran past the pad, buys >= $1, and the sale decided HOLD after
@@ -184,14 +186,15 @@ def live():
             books = feed.books(markets)
             raw = ws.trades_since(last_seen)
             last_seen = now
-            led.prints([(t, a, p, s, side) for (t, a, p, s, side) in raw])
+            if RECORD:
+                led.prints([(t, a, p, s, side) for (t, a, p, s, side) in raw])
             for m in markets:
                 if lx:
                     lx.prepare((m.up_token, m.down_token))   # new round: fetch order metadata now, not at the order
                 up, dn = books[m.up_token], books[m.down_token]
                 t_left = m.seconds_left(now)
                 side_book = {"Up": up, "Down": dn}
-                if now - last_tick >= 0.1:
+                if RECORD and now - last_tick >= 0.1:
                     last_tick = now
                     led.tick(now, m, Snapshot(up, dn, t_left, m.fee, 0.0, None), None, None, None, None)
                     led.binance(now, bn.at(now))

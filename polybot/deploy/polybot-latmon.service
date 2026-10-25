@@ -1,0 +1,16 @@
+# Latency monitor for the dashboard (runs/latency.json).
+[Unit]
+Description=polybot latency monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python latmon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

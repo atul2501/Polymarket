@@ -27,7 +27,7 @@ HOST, CHAIN = "https://clob.polymarket.com", 137
 _f = lambda k, d: float(os.getenv(k, d))
 MAX_TRADE_USD = _f("TK_MAX_TRADE_USD", 10)   # never spend more than this on one buy
 MAX_DAY_LOSS = _f("TK_MAX_DAY_LOSS", 15)     # stop opening trades after this realised loss today (UTC)
-KEEPALIVE = _f("TK_KEEPALIVE", 0)            # seconds between warm-up requests, 0 = off (an order after 45 s of quiet took 374-911 ms vs ~215)
+KEEPALIVE = _f("TK_KEEPALIVE", 5)            # seconds between warm-up requests, 0 = off (an order after 45 s of quiet took 374-911 ms vs ~215)
 KEEPALIVE_KIND = os.getenv("TK_KEEPALIVE_KIND", "auth")   # "auth" reaches Polymarket's servers, "time" only the edge
 SLIP = _f("TK_SLIP", 0.01)                   # limit = ask + 1 tick on buys, bid - 1 tick on sells
 LOSS_SINCE = os.getenv("TK_LOSS_SINCE", "")   # ISO time (UTC): the loss cap counts only trades from then on (a reset)
@@ -63,6 +63,7 @@ class Live:
         self.bn = None                                # taker.py sets its BinanceFeed here
         self.ready, self.err = set(), ""              # tokens with metadata cached; last order error text
         self.t_post, self.ms = 0.0, 0.0               # last order: when it was sent (epoch) and how long the call took
+        self.have = {}                                # token -> shares the wallet really holds, read off the loop after a buy
         if not self.dry:
             self.c.set_api_creds(self.c.create_or_derive_api_key())
         self.check(force=True)
@@ -168,7 +169,7 @@ class Live:
         SELL makingAmount = shares sold, takingAmount = USDC got.
         """
         price = round(min(max(price, 0.01), 0.99), 2)
-        size = int(size * 100) / 100                       # 2 size decimals, rounded down
+        size = math.floor(size * 100 + 1e-6) / 100         # 2 size decimals, rounded down (int(9.87*100) is 986)
         self.err = ""
         if size < 0.01:
             return 0.0, price
@@ -233,12 +234,31 @@ class Live:
         got, px = self._fak(token, "BUY", limit, size)
         if got and self.balance is not None:
             self.balance -= got * px                       # until the next refresh
+        if got:
+            self.have.pop(token, None)
+            self.watch(token)
         return got, px
 
+    def watch(self, token, wait=2.0):
+        """Read the wallet's real share count in the background (the chain call took seconds inside the loop)."""
+        def run():
+            for _ in range(5):                             # shares land on-chain a few seconds after the match
+                time.sleep(wait)
+                if h := self.held(token):
+                    self.have[token] = h
+                    return
+        threading.Thread(target=run, daemon=True).start()
+
     def sell(self, token, bid, size):
-        got, px = self._fak(token, "SELL", bid - SLIP, size)
-        if not got and "balance" in self.err.lower():      # fewer shares than we think (fee in shares / not settled)
-            have = self.held(token)
-            if have:
-                got, px = self._fak(token, "SELL", bid - SLIP, min(size, have))
+        """Sell up to size, never more than the wallet holds. When everything held is sold, reports `size` shares at
+        the proceeds per recorded share, so a fee taken in shares can't leave a 0.0x remainder retried until round end."""
+        have = self.have.get(token)
+        n = min(size, have) if have else size
+        got, px = self._fak(token, "SELL", bid - SLIP, n)
+        if not got and "balance" in self.err.lower():      # not on-chain yet or fewer shares: re-read off the loop, retry in 1 s
+            self.watch(token, wait=0.5)
+            return 0.0, px
+        if got and have and got >= have - 0.01:
+            self.have.pop(token, None)
+            return size, got * px / size
         return got, px

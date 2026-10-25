@@ -1,0 +1,18 @@
+# Paper twin of polybot-live: same model, realistic fills, records books for calibrate.py / trade_audit.py.
+[Unit]
+Description=polybot T-fast-h12 paper twin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
+EnvironmentFile=/home/ec2-user/poly/polybot/deploy/h12.env
+Environment=TK_LEDGER=runs/paper-h12.db PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

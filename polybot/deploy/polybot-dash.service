@@ -1,0 +1,15 @@
+# Dashboard on the server only (127.0.0.1). From the Mac: ssh -L 8787:localhost:8787 <server>, open localhost:8787
+[Unit]
+Description=polybot dashboard
+After=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+Environment=DASH_BOTS=Live-h12=live-h12.db,Paper-h12=paper-h12.db DASH_HOURS=24 "DASH_MARK=taker start"
+ExecStart=/home/ec2-user/venv/bin/python dashboard.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

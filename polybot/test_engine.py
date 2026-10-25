@@ -210,7 +210,7 @@ def main():
                 raise self.r
             return self.r
     bot = object.__new__(lv.Live)
-    bot.dry, bot.balance, bot.err = False, 34.6, ""
+    bot.dry, bot.balance, bot.err, bot.have = False, 34.6, "", {}
     bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0xd3", "makingAmount": "3.749999",
                         "takingAmount": "5.136985"})
     sh, px = bot._fak("tok", "BUY", 0.75, 5)
@@ -225,6 +225,21 @@ def main():
     assert bot._fak("tok", "BUY", 0.55, 5)[0] == 0
     bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0x1", "makingAmount": "1.0", "takingAmount": "7.69"})
     assert bot.buy("tok", 0.12, 5)[0] == 7.69                                        # $1 minimum: 7.7 sh at 0.13
+
+    # live sell: never more than the wallet holds; selling all of it closes the recorded size (fee taken in shares)
+    sent = []
+
+    class SellClient:
+        def create_and_post_order(self, args, **k):
+            sent.append(args.size)
+            return {"success": True, "status": "matched", "orderID": "0x2", "makingAmount": str(args.size),
+                    "takingAmount": str(round(args.size * 0.60, 6))}
+    bot.c, bot.have = SellClient(), {"tok": 9.87}
+    sh, px = bot.sell("tok", 0.61, 10)
+    assert sent == [9.87] and sh == 10 and abs(px - 9.87 * 0.60 / 10) < 1e-9 and "tok" not in bot.have
+    bot.c = FakeClient(Exception("not enough balance / allowance"))
+    bot.watch = lambda *a, **k: None                                                 # no thread in the test
+    assert bot.sell("tok", 0.61, 10)[0] == 0                                         # returns at once, retried next pass
 
     print("ok")
 

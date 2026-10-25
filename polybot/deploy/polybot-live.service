@@ -1,0 +1,22 @@
+# T-fast-h12 with real orders. Starts as LIVE-DRY (signs, never posts). Go live:
+#   echo TK_LIVE_DRY=0 > ~/.polybot-mode && sudo systemctl restart polybot-live
+[Unit]
+Description=polybot T-fast-h12 live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
+EnvironmentFile=/home/ec2-user/poly/polybot/deploy/h12.env
+EnvironmentFile=/home/ec2-user/.polybot-secrets
+Environment=TK_LIVE=1 TK_LIVE_DRY=1 TK_LEDGER=runs/live-h12.db PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/ec2-user/.polybot-mode
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
