@@ -24,6 +24,12 @@ CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 # before Coinbase; Binance moves ~2.6 s before Chainlink and ~0.4 s before Polymarket's book.
 BINANCE_WS = ("wss://fstream.binance.com/ws/btcusdt@bookTicker", "wss://stream.binance.com:9443/ws/btcusdt@bookTicker")
 STALE_SEC = 10
+# BN_SOURCE=deribit: the same signal from Deribit's BTC perpetual (London). From Stockholm 25 Oct its quotes arrived in
+# ~26 ms vs Binance futures ~166 ms and showed the same moves first on 93% of 48 moves, median 133 ms (feedrace.py)
+DERIBIT_WS = "wss://www.deribit.com/ws/api/v2"
+DERIBIT_SUB = {"jsonrpc": "2.0", "id": 1, "method": "public/subscribe", "params": {"channels": ["quote.BTC-PERPETUAL"]}}
+BYBIT_WS = "wss://stream.bybit.com/v5/public/linear"           # BN_SOURCE=bybit: BTCUSDT perpetual best bid/ask
+BYBIT_SUB = {"op": "subscribe", "args": ["orderbook.1.BTCUSDT"]}
 
 
 def _thread(coro_fn):
@@ -127,7 +133,10 @@ class BookFeed:
             return [x for x in self.prints if x[0] > t]
 
     def watch(self, assets):
-        self.assets = set(assets)  # a change makes _run reconnect with the new list
+        """Subscribe to assets. A change makes _run reconnect, so only a NEW asset triggers one: tokens of a round
+        that just ended stay subscribed until the next round's tokens are added (no reconnect at the round change)."""
+        if not set(assets) <= self.assets:
+            self.assets = set(assets)
 
     def _apply(self, ev):
         now = time.time()
@@ -163,8 +172,10 @@ class BookFeed:
                 await asyncio.sleep(0.2)
                 continue
             try:
+                # max_queue=None: the default 16-message queue stops reading the socket during a burst, then
+                # Polymarket drops us ("slow consumer: send buffer full", 5x on 25 Oct morning)
                 async with websockets.connect(CLOB_WS, ssl=CTX, open_timeout=10, ping_interval=10,
-                                              max_size=None) as ws:
+                                              max_size=None, max_queue=None) as ws:
                     await ws.send(json.dumps({"assets_ids": sorted(assets), "type": "market"}))
                     # plain recv (no per-message timeout) keeps up with ~1000 msg/s; wait_for here caused
                     # "slow consumer" disconnects. Messages arrive constantly, so the asset check still runs often.
@@ -202,6 +213,7 @@ class BinanceFeed:
     # together, no gain. On the server the Stockholm-Tokyo path loses packets (a lost packet stalls one TCP stream
     # for >= 1 RTT = 230 ms): BN_SOCKETS=2 hedges that. Compare "late updates dropped" per 5 min with 1 vs 2.
     SOCKETS = int(os.getenv("BN_SOCKETS", 1))
+    SOURCE = os.getenv("BN_SOURCE", "binance")   # "deribit": Deribit BTC perpetual quotes instead (use BN_SOCKETS=1)
     BEHIND_MS = 3000           # a socket this far behind Binance's event time is replaced
     MAX_LAG_MS = float(os.getenv("BN_MAX_LAG_MS", 600))   # an update later than this is dropped, never traded on:
     # after a 1-3 s stall the late burst looks like a sudden move, but Polymarket priced it long ago (23 Oct: the
@@ -214,6 +226,7 @@ class BinanceFeed:
         self.last_u = 0        # newest update id accepted
         self.won = collections.Counter()            # socket -> updates it delivered first
         self.stale = 0                              # updates dropped for arriving later than MAX_LAG_MS
+        self.wake = threading.Event()               # set on every accepted update: the bot loop reacts at once
 
     def start(self):
         _thread(self._run)
@@ -226,10 +239,30 @@ class BinanceFeed:
         await asyncio.sleep(k * 2)                  # stagger so both are never fresh (or stale) together
         while True:
             try:
-                async with websockets.connect(BINANCE_WS[0], ssl=CTX, open_timeout=10, ping_interval=20) as ws:
+                src = self.SOURCE
+                url = {"deribit": DERIBIT_WS, "bybit": BYBIT_WS}.get(src, BINANCE_WS[0])
+                bb = [None, None]                              # bybit: last bid/ask (its deltas carry only changes)
+                async with websockets.connect(url, ssl=CTX, open_timeout=10, ping_interval=20) as ws:
+                    if src in ("deribit", "bybit"):
+                        await ws.send(json.dumps(DERIBIT_SUB if src == "deribit" else BYBIT_SUB))
                     while True:
                         d = json.loads(await asyncio.wait_for(ws.recv(), 10))  # silent 10 s -> reconnect
                         now = time.time()
+                        if src == "deribit":                   # to Binance's shape; no update id, one socket only
+                            q = (d.get("params") or {}).get("data")
+                            if d.get("method") != "subscription" or not q:
+                                continue
+                            d = {"E": q["timestamp"], "u": self.last_u + 1, "b": q["best_bid_price"], "a": q["best_ask_price"]}
+                        elif src == "bybit":
+                            q = d.get("data")
+                            if not q:
+                                continue
+                            for i, k in ((0, "b"), (1, "a")):
+                                lv = [x for x in q.get(k) or [] if float(x[1])]
+                                bb[i] = lv[0][0] if lv else bb[i]
+                            if not all(bb):
+                                continue
+                            d = {"E": d["ts"], "u": self.last_u + 1, "b": bb[0], "a": bb[1]}
                         if now * 1000 - d["E"] > self.BEHIND_MS:
                             log.warning("binance socket %d %.1fs behind, reconnecting", k, now - d["E"] / 1000)
                             break
@@ -243,12 +276,18 @@ class BinanceFeed:
                             self.won[k] += 1
                             self.pts.append((now, (float(d["b"]) + float(d["a"])) / 2))
                             self.lags.append((now, now * 1000 - d["E"]))
+                            self.wake.set()
                             if len(self.pts) > 6000:
                                 cut = now - 15
                                 self.pts = [x for x in self.pts if x[0] >= cut]
             except Exception as e:  # ponytail: fixed 1 s retry, no backoff growth
                 log.warning("binance socket %d: %r, reconnecting", k, e)
                 await asyncio.sleep(1)
+
+    def wait(self, timeout):
+        """Sleep until the next accepted update or timeout (replaces a fixed loop sleep: up to 50 ms later)."""
+        self.wake.wait(timeout)
+        self.wake.clear()
 
     def lag_ms(self):
         """Delay of the newest update we accepted (Binance event time to arrival), or None."""

@@ -1,6 +1,6 @@
-# Paper twin of polybot-live: same model, realistic fills, records books for calibrate.py / trade_audit.py.
+# Binance comparison (T-fast-h12) on paper: realistic fills, records books for calibrate.py / trade_audit.py.
 [Unit]
-Description=polybot T-fast-h12 paper twin
+Description=polybot T-fast-h12 Binance comparison (paper)
 After=network-online.target
 Wants=network-online.target
 

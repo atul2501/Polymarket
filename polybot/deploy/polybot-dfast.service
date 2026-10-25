@@ -1,0 +1,19 @@
+# D-fast (paper): paper twin of polybot-live (same deploy/dfast.env), records the books.
+[Unit]
+Description=polybot D-fast Deribit signal (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
+EnvironmentFile=/home/ec2-user/poly/polybot/deploy/dfast.env
+# honest paper: match delay from live's recent order calls, 2x our size must sit at the price (others ahead of us)
+Environment=TK_LEDGER=runs/d-fast.db TK_MATCH_FROM=runs/live-d.db TK_QUEUE=2 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

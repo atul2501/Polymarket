@@ -26,7 +26,7 @@ from pathlib import Path
 
 import requests
 
-from feeds import BookFeed, ChainlinkFeed
+from feeds import BinanceFeed, BookFeed, ChainlinkFeed
 from market import MarketFeed
 
 RUNS = Path(__file__).parent / "runs"
@@ -195,6 +195,21 @@ def bot_state(name, db_name):
 
 # ---- the dashboard's own live feeds (data-in panel)
 cfeed, book = ChainlinkFeed(["btc/usd"]), BookFeed()
+SIGNAL = os.getenv("DASH_SIGNAL", "binance")     # "deribit": the trigger tile shows Deribit (the live bot's signal)
+sfeed = BinanceFeed()
+sfeed.SOURCE = SIGNAL
+
+
+def signal_state(now):
+    """The live bot's own signal feed (Deribit), straight from its socket in this process."""
+    with sfeed.lock:
+        pts = [p for p in sfeed.pts if p[0] > now - 120]
+        lag = sfeed.lags[-1][1] / 1000 if sfeed.lags else None
+    if not pts:
+        return None
+    step = max(1, len(pts) // 240)
+    return {"price": pts[-1][1], "age": lag, "rate": sum(1 for t, _ in pts if t > now - 5) / 5,
+            "series": [[round(t, 2), v] for t, v in pts[::step]]}
 mfeed = MarketFeed(http, book)
 upmid = collections.deque(maxlen=240)            # (t, UP mid) sampled every 0.5 s
 feedmeta = {"market": None, "msgs": [], "cl": []}
@@ -237,8 +252,8 @@ def bot_binance(now):
 
 def feeds_state(now):
     lm = (latmon() or {}).get("binance") or {}
-    mb = ((lm if lm.get("price") is not None else None) or bot_binance(now)
-          or {"price": None, "age": None, "rate": 0, "series": []})
+    mb = ((signal_state(now) if SIGNAL != "binance" else None) or (lm if lm.get("price") is not None else None)
+          or bot_binance(now) or {"price": None, "age": None, "rate": 0, "series": []})
     with cfeed.lock:
         cl = sorted((t, v) for t, v in cfeed.points.get("btc/usd", {}).items() if t > now - 120)
     msgs = feedmeta["msgs"]
@@ -251,7 +266,7 @@ def feeds_state(now):
             tape = [[t, side[a], px, sz, ts] for t, a, px, sz, ts in book.prints[-200:] if a in side][-30:][::-1]
     u = upmid[-1] if upmid else None
     return {
-        "binance": {k: mb.get(k) for k in ("price", "age", "rate", "series")},
+        "binance": {k: mb.get(k) for k in ("price", "age", "rate", "series")}, "signal": SIGNAL,
         "chainlink": {"price": cl[-1][1] if cl else None, "age": now - cfeed.last_msg if cfeed.last_msg else None,
                       "rate": sum(1 for t, _ in cl if t > now - 10) / 10, "series": cl},
         "polymarket": {"mid": u[1] if u else None, "bid": u[2] if u else None, "ask": u[3] if u else None,
@@ -398,7 +413,7 @@ def latency_state(now):
     if b is None and (lv := live_status(now)) and lv.get("binance_lag"):   # latmon without its stream: the bot's own
         b, b95 = lv["binance_lag"]
     return {
-        "monitor": m is not None,
+        "monitor": m is not None, "signal": (m or {}).get("signal", "binance"),
         "clob": {"now": hist[-1][1] if hist else None, "p50": clob, "p95": pctl([x[1] for x in recent], .95)},
         "gamma": {"now": hist[-1][2] if hist else None, "p50": pctl([x[2] for x in recent], .5)},
         "binance_rest": {"now": hist[-1][3] if hist else None, "p50": pctl([x[3] for x in recent], .5)},
@@ -479,6 +494,8 @@ if __name__ == "__main__":
     threading.Thread(target=wallet_history, daemon=True).start()
     threading.Thread(target=wallet_live, daemon=True).start()
     cfeed.start(); book.start()
+    if SIGNAL != "binance":
+        sfeed.start()
     threading.Thread(target=sampler, daemon=True).start()
     print(f"dashboard on http://localhost:{PORT} | test from {time.strftime('%Y-%m-%d %H:%M', time.localtime(SINCE))}")
     if HOST not in ("127.0.0.1", "localhost") and not AUTH[1]:

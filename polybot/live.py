@@ -47,6 +47,15 @@ def geoblocked():
     return bool(g.get("blocked")), g
 
 
+def buy_size(size, limit):
+    """Shares for a marketable BUY: at least `size`, with shares x limit at 2 decimals at most. Polymarket rejects
+    more ("maker amount supports a max accuracy of 2 decimals": 25 Oct 06:27, 11.12 x 0.09 = $1.0008)."""
+    s, p = math.ceil(size * 100 - 1e-6), round(limit * 100)    # shares and price in hundredths
+    while s * p % 100:
+        s += 1
+    return s / 100
+
+
 def amount(x, cap):
     """Shares or USDC from an API amount string; guards against 6-decimal fixed-point units (5000000 = 5)."""
     v = float(x or 0)
@@ -218,7 +227,7 @@ class Live:
 
     def buy(self, token, ask, size):
         limit = round(ask + SLIP, 2)
-        size = max(size, math.ceil(100 / limit) / 100)     # marketable BUYs must be >= $1 (22 Oct: $0.65 rejected)
+        size = buy_size(max(size, math.ceil(100 / limit) / 100), limit)   # >= $1 (22 Oct: $0.65 rejected), cents only
         self.err, self.ms, self.t_post = "", 0.0, 0.0      # why a buy returns 0 without an order shows in the signals table
         if size * limit > MAX_TRADE_USD:
             log.warning("buy %.2f x %.2f = $%.2f over TK_MAX_TRADE_USD %.2f, skipped", size, limit, size * limit, MAX_TRADE_USD)

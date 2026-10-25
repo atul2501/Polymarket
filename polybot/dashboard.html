@@ -279,7 +279,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   <section class="section" id="data">
     <div class="sh"><span class="n">01</span><h2>Data in</h2><p>The live feeds the bots trade on, streaming into this dashboard</p></div>
     <div class="g4">
-      <article class="panel feed" id="f-bn"><div class="top-row"><span class="src"><span class="live-dot on"></span>Binance BTC/USDT</span><span>trigger signal</span></div>
+      <article class="panel feed" id="f-bn"><div class="top-row"><span class="src"><span class="live-dot on"></span><span id="signame">Binance BTC/USDT</span></span><span>trigger signal</span></div>
         <div class="val num"><span class="sk" style="width:60%;height:28px"></span></div><div class="chg num"></div><svg aria-hidden="true"></svg><div class="meta"></div></article>
       <article class="panel feed" id="f-cl"><div class="top-row"><span class="src"><span class="live-dot on"></span>Chainlink BTC/USD</span><span>settles the round</span></div>
         <div class="val num"><span class="sk" style="width:60%;height:28px"></span></div><div class="chg num"></div><svg aria-hidden="true"></svg><div class="meta"></div></article>
@@ -291,12 +291,12 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
   </section>
 
   <section class="section" id="latency">
-    <div class="sh"><span class="n">02</span><h2>Latency</h2><p>How old the data is when it reaches this Mac, and how long an order would take to reach Polymarket</p></div>
+    <div class="sh"><span class="n">02</span><h2>Latency</h2><p>How old the data is when it reaches the trading server, and how long an order takes to reach Polymarket</p></div>
     <div class="lat" id="lat"></div>
     <article class="panel" style="margin-top:16px">
-      <div class="ph"><div><h3>Round trips over the last hour</h3><div class="cap">Measured every 5 seconds from this Mac, in milliseconds</div></div><div class="chips" id="latlegend"></div></div>
+      <div class="ph"><div><h3>Round trips over the last hour</h3><div class="cap">Measured every 5 seconds from the trading server (Stockholm), in milliseconds</div></div><div class="chips" id="latlegend"></div></div>
       <svg id="latchart" role="img" aria-label="Round-trip latency over the last hour"></svg>
-      <div class="note">Total reaction = Binance data age + one order round trip to Polymarket. Our edge fades with every 0.1 s: replays gave about +5¢ a share at 0.1 s, +3¢ at 0.3 s and nothing at 0.7 s.</div>
+      <div class="note">Total reaction = signal data age (Deribit since 25 Oct 07:15; Binance before) + one order round trip. On top, Polymarket holds every taker order ~300 ms before matching it (measured 25 Oct: order calls 257–454 ms, some over 1 s), the same for everyone, so seeing the move first is what wins: Deribit shows BTC moves ~110 ms before Binance here.</div>
     </article>
   </section>
 
@@ -341,7 +341,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
         <div><div class="wh">Latest fills</div><div class="list" id="wfeed"></div></div>
       </div>
       <div class="profile"><b>Long-run profile</b> · our analysis of 1,661 sampled rounds, 21 Sep – 21 Oct: <b>+3.79%</b> return on money put in, profitable every week (+2.4% to +4.6%),
-        <b>58%</b> of rounds won, <b>83%</b> of shares bought at the ask, <b>never sells</b>, holds to settlement, and buys the side Binance moved toward over the last ~3 seconds. The W-0.5 and W-3bp bots copy that rule.</div>
+        <b>58%</b> of rounds won, <b>83%</b> of shares bought at the ask, <b>never sells</b>, holds to settlement, and buys the side Binance moved toward over the last ~3 seconds. The W-3bp-D bot copies that rule on the faster Deribit feed.</div>
     </article>
   </section>
 
@@ -364,7 +364,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
     <article class="panel">
       <div class="verdict" id="verdict"><span class="sk" style="width:40%"></span></div>
       <div class="scroll"><table>
-        <thead><tr><th>Bot</th><th>Book snapshots</th><th>Per second</th><th>Book coverage</th><th>Gaps &gt; 2 s</th><th>Longest gap</th><th>Binance coverage</th><th>Binance gaps</th><th>Reconnects</th><th>Rounds traded</th></tr></thead>
+        <thead><tr><th>Bot</th><th>Book snapshots</th><th>Per second</th><th>Book coverage</th><th>Gaps &gt; 2 s</th><th>Longest gap</th><th>Deribit coverage</th><th>Deribit gaps</th><th>Reconnects</th><th>Rounds traded</th></tr></thead>
         <tbody id="integ"></tbody></table></div>
       <div class="note" id="integnote"></div>
     </article>
@@ -375,7 +375,10 @@ tbody tr:hover td { background: color-mix(in srgb, var(--s2) 55%, transparent); 
 <script>
 const $ = id => document.getElementById(id);
 const SLOTS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
-const RULES = { "W-3bp": "Wallet rule · 3 bp move · hold to settle", "W-0.5": "Wallet rule · 0.5 bp move · hold to settle",
+const RULES = { "Live-D": "REAL money · Deribit 1 bp in 0.3 s · sell after 12 s", "Paper-D": "Paper twin of Live-D",
+  "W-3bp-D": "Wallet rule on Deribit · 3 bp in 3 s · hold to settle",
+  "W-B": "Wallet-style · Binance 1 bp in 5 s · hold to settle · max 20 one-sided", "W-Y": "Wallet-style · Bybit 0.5 bp in 3 s · hold to settle · max 20 one-sided",
+  "W-B3": "Wallet-style · Binance 1 bp in 3 s · hold to settle · max 20 one-sided", "W-Y3": "Wallet-style · Bybit 1 bp in 3 s · hold to settle · max 20 one-sided", "W-3bp": "Wallet rule · 3 bp move · hold to settle", "W-0.5": "Wallet rule · 0.5 bp move · hold to settle",
   "T-0.3": "Fast taker · 2 bp · sell after 5 s", "T-0.1": "Fast taker · 0.1 s reaction (server estimate)", "T-3bp": "Fast taker · 3 bp · sell after 5 s" };
 let MODE = "pct", LAST = null, LINES = [], HIDDEN = new Set(), FILTER = "All", HOVER = null, BUSY = false, TAPE_TOP = 0, RR_OPEN = false;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
@@ -436,9 +439,10 @@ function render(d) {
 
   // 01 data in
   if (F.binance) {
+    $("signame").textContent = F.signal === "deribit" ? "Deribit BTC perpetual" : "Binance BTC/USDT";
     feedTile("f-bn", F.binance.price, F.binance, usd2, btcChg, `${Math.round(F.binance.rate)} updates/s`, 3);
     const basis = F.binance.price && F.chainlink.price ? F.chainlink.price - F.binance.price : null;
-    feedTile("f-cl", F.chainlink.price, F.chainlink, usd2, btcChg, `${F.chainlink.rate.toFixed(1)}/s${basis == null ? "" : ` · ${basis >= 0 ? "+" : "−"}$${Math.abs(basis).toFixed(0)} vs Binance`}`, 5);
+    feedTile("f-cl", F.chainlink.price, F.chainlink, usd2, btcChg, `${F.chainlink.rate.toFixed(1)}/s${basis == null ? "" : ` · ${basis >= 0 ? "+" : "−"}$${Math.abs(basis).toFixed(0)} vs ${F.signal === "deribit" ? "Deribit" : "Binance"}`}`, 5);
     const pm = F.polymarket;
     feedTile("f-pm", pm.mid, pm, cents, dd => `<span class="${cls(dd)}">${dd >= 0 ? "+" : "−"}${Math.abs(dd * 100).toFixed(1)}¢</span>`,
       `${Math.round(pm.rate)} book events/s · ${cents(pm.bid)} / ${cents(pm.ask)}`, 5);
@@ -460,8 +464,8 @@ function render(d) {
   const inRate = (F.binance?.rate || 0) + (F.polymarket?.rate || 0) + (F.chainlink?.rate || 0);
   const stage = (i, k, v, x, active) => `<div class="stage"><div class="k"><span class="i">${i}</span>${k}</div><div class="v num">${v}</div><div class="x">${x}</div><div class="flow ${active ? "" : "idle"}"></div></div>`;
   $("pipe").innerHTML =
-    stage("A", "Data in", Math.round(inRate).toLocaleString() + "/s", `Binance ${Math.round(F.binance?.rate || 0)} · book ${Math.round(F.polymarket?.rate || 0)} · Chainlink ${(F.chainlink?.rate || 0).toFixed(1)} updates per second`, inRate > 0) +
-    stage("B", "Signals", signals.toLocaleString(), "Binance moved past a bot's trigger", signals > 0) +
+    stage("A", "Data in", Math.round(inRate).toLocaleString() + "/s", `${F.signal === "deribit" ? "Deribit" : "Binance"} ${Math.round(F.binance?.rate || 0)} · book ${Math.round(F.polymarket?.rate || 0)} · Chainlink ${(F.chainlink?.rate || 0).toFixed(1)} updates per second`, inRate > 0) +
+    stage("B", "Signals", signals.toLocaleString(), "Deribit BTC moved past a bot's trigger", signals > 0) +
     stage("C", "Paper buys", buys.toLocaleString(), signals ? `${(buys / signals * 100).toFixed(0)}% of signals taken; the rest had no good price or size` : "Waiting for the first signal", buys > 0) +
     stage("D", "Open positions", open.toLocaleString(), `$${atRisk.toFixed(2)} waiting for the round to settle`, open > 0) +
     stage("E", "Settled", settled.toLocaleString(), settled ? `<span class="${cls(pnl)}">${money(pnl)}</span> · ${(won / settled * 100).toFixed(0)}% of trades won` : "No settled trades yet", settled > 0);
@@ -564,13 +568,13 @@ function render(d) {
       minor: '<path d="M8 4v5M8 11.5v.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/>', bad: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>'}[level];
     $("verdict").className = "verdict " + level;
     $("verdict").innerHTML = `<span class="ic"><svg width="16" height="16" viewBox="0 0 16 16">${icon}</svg></span><div><b>${level === "ok" ? "No data loss" : level === "minor" ? "Minor gaps, results still valid" : "Data loss detected"}</b>
-      <span>Order book recorded ${worstCov.toFixed(2)}% of the time (worst bot) · Binance ${worstBn.toFixed(2)}% · ${gaps} book gap${gaps === 1 ? "" : "s"} longer than ${d.gap_sec} s · longest hole ${maxGap.toFixed(1)} s · ${rec} feed reconnect${rec === 1 ? "" : "s"}, all recovered</span></div>`;
+      <span>Order book recorded ${worstCov.toFixed(2)}% of the time (worst bot) · Deribit ${worstBn.toFixed(2)}% · ${gaps} book gap${gaps === 1 ? "" : "s"} longer than ${d.gap_sec} s · longest hole ${maxGap.toFixed(1)} s · ${rec} feed reconnect${rec === 1 ? "" : "s"}, all recovered</span></div>`;
     const covCell = v => `<span class="cov"><span class="m"><i style="width:${Math.max(2, Math.min(100, (v - 95) / 5 * 100))}%;background:${v >= 99.9 ? "var(--up)" : v >= 99 ? "var(--warn)" : "var(--down)"}"></i></span><span class="num">${v.toFixed(2)}%</span></span>`;
     $("integ").innerHTML = bots.map((b, i) => { const x = I[i]; return `<tr><td><span class="who"><span class="bar" style="background:${colorOf(b.name)};height:18px"></span><b>${esc(b.name)}</b></span></td>
       ${!x.ticks && R.length ? '<td colspan="7" class="dim">not recorded here (live bot; its paper twin records the market)</td>' : `<td class="num">${x.ticks.toLocaleString()}</td><td class="num">${x.tick_rate.toFixed(1)}</td><td>${covCell(x.coverage)}</td>
       <td class="num ${x.gaps ? "warn" : ""}">${x.gaps}</td><td class="num">${x.max_gap.toFixed(1)} s</td><td>${covCell(x.bn_coverage)}</td>
       <td class="num ${x.bn_gaps ? "warn" : ""}">${x.bn_gaps}</td>`}<td class="num">${x.reconnects}</td><td class="num">${b.rounds_traded}</td></tr>`; }).join("");
-    $("integnote").textContent = `Coverage = the share of the ${dur(I[0].elapsed)} since the start in which the bot had fresh data; any hole longer than 1 s counts as missing. Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
+    $("integnote").textContent = `Coverage = the share of the ${dur(I[0].elapsed)} since the start in which the bot had fresh data; any hole longer than 1 s counts as missing. Deribit = the trigger feed of every bot (it sends fewer updates when BTC is quiet, so a short gap there is usually silence, not lost data). Copied wallet: ${w.n || 0} settled rounds loaded. Polymarket API ${typeof d.api_ms === "number" ? d.api_ms + " ms" : "unreachable"}.`;
   }
   drawChart();
 }
@@ -579,16 +583,14 @@ function renderLatency(L, now) {
   if (!L) return;
   const ms = v => v == null ? "—" : v >= 1000 ? (v / 1000).toFixed(1) + '<small>s</small>' : Math.round(v) + '<small>ms</small>';
   const tile = (k, v, x) => `<article class="panel lt"><div class="k">${k}</div><div class="v num">${ms(v)}</div><div class="x">${x}</div></article>`;
-  // a live order = Binance age + order round trip; the paper bots get Binance just as late and then wait 300 ms
-  const r = L.reaction, b = L.binance_stream.p50, paper = b == null ? null : b + 300;
-  const verdict = r == null ? "Measuring…" : (r <= paper
-    ? `A real order would land about ${Math.round(paper - r)} ms sooner than the realistic paper bots assume (${Math.round(paper)} ms), so their results are conservative.`
-    : `A real order would land about ${Math.round(r - paper)} ms later than the paper bots assume, so their results are optimistic.`)
-    + (r <= 120 ? " Fast enough for the small-move edge." : " The small-move edge needs under ~120 ms.");
+  // reaction = signal data age + one round trip; Polymarket then holds every taker order ~300 ms (same for everyone)
+  const r = L.reaction, b = L.binance_stream.p50;
+  const verdict = r == null ? "Measuring…" : `${L.signal === "deribit" ? "Deribit" : "Binance"} data ${Math.round(b)} ms old + ${Math.round(r - b)} ms round trip to Polymarket. ` +
+    "Polymarket then holds each taker order ~300 ms before matching; paper bots model that (realistic.env).";
   const pos = r == null ? 0 : Math.min(100, r / 700 * 100);
   $("lat").innerHTML =
     tile("Order to Polymarket", L.clob.p50, `round trip · p95 ${L.clob.p95 ? Math.round(L.clob.p95) : "—"} · now ${L.clob.now ? Math.round(L.clob.now) : "—"}`) +
-    tile("Binance data age", L.monitor ? L.binance_stream.p50 : null, L.monitor ? `median 60 s · clock-corrected · p95 ${L.binance_stream.p95 ? Math.round(L.binance_stream.p95) : "—"}` : "start latmon.py to measure") +
+    tile((L.signal === "deribit" ? "Deribit" : "Binance") + " data age", L.monitor ? L.binance_stream.p50 : null, L.monitor ? `median 60 s · clock-corrected · p95 ${L.binance_stream.p95 ? Math.round(L.binance_stream.p95) : "—"}` : "start latmon.py to measure") +
     tile("Polymarket book age", L.book_stream.p50, `median 60 s · incl. this dashboard's processing · p95 ${L.book_stream.p95 ? Math.round(L.book_stream.p95) : "—"}`) +
     tile("Chainlink age", L.chainlink_age, "latest oracle point → now · updates ~1/s") +
     `<article class="panel lt hero"><div class="k">Total reaction time</div><div class="v num">${ms(r)}</div>
@@ -597,7 +599,8 @@ function renderLatency(L, now) {
   // round-trip chart
   const svg = $("latchart"), W = svg.clientWidth || 900, H = 200, m = {l: 48, r: 12, t: 10, b: 24}, h = L.history || [];
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const series = [{n: "Polymarket order", i: 1, c: "var(--c1)"}, {n: "Binance REST", i: 3, c: "var(--c3)"}, {n: "Polymarket Gamma", i: 2, c: "var(--c2)"}];
+  const SIG = L.signal === "deribit" ? "Deribit" : "Binance";
+  const series = [{n: "Polymarket round trip", i: 1, c: "var(--c1)"}, {n: SIG + " REST", i: 3, c: "var(--c3)"}, {n: "Polymarket Gamma", i: 2, c: "var(--c2)"}];
   $("latlegend").innerHTML = series.map(s => `<span class="chip" style="cursor:default"><span class="key" style="border-color:${s.c}"></span>${s.n} <b>${h.length ? Math.round(h[h.length - 1][s.i]) + " ms" : "—"}</b></span>`).join("");
   if (h.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">Collecting samples (every 5 s)</text>`; return; }
   const t0 = h[0][0], t1 = Math.max(h[h.length - 1][0], t0 + 60), top = Math.max(400, ...h.flatMap(x => [x[1], x[2], x[3]])) * 1.05;
@@ -605,7 +608,7 @@ function renderLatency(L, now) {
   const yt = niceTicks(0, top, 4), step = [60, 300, 600, 900].find(s => (t1 - t0) / s <= 8) || 1800, xt = [];
   for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) xt.push(t);
   svg.innerHTML = yt.map(v => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join("") +
-    [[100, "fast-edge target"], [300, "paper bots assume"]].map(([v, t]) => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--faint)" stroke-dasharray="3 4"/><text x="${W - m.r}" y="${Y(v) - 5}" text-anchor="end">${t} · ${v} ms</text>`).join("") +
+    [[100, "fast-edge target"], [340, "Polymarket order delay (measured)"]].map(([v, t]) => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--faint)" stroke-dasharray="3 4"/><text x="${W - m.r}" y="${Y(v) - 5}" text-anchor="end">${t} · ${v} ms</text>`).join("") +
     xt.map(t => `<text x="${X(t)}" y="${H - 6}" text-anchor="middle">${hm(t)}</text>`).join("") +
     series.map(s => `<polyline fill="none" stroke="${s.c}" stroke-width="${s.i === 1 ? 2 : 1.5}" stroke-linejoin="round" points="${h.map(x => X(x[0]).toFixed(1) + "," + Y(x[s.i]).toFixed(1)).join(" ")}"/>`).join("");
 }

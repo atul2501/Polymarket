@@ -1,0 +1,14 @@
+# Feed race (read-only): records 9 BTC feeds + the Polymarket book for 10 h (through the US open), then exits. Not enabled at boot.
+#   sudo systemctl start polybot-feedrace      then later: ~/venv/bin/python feedrace.py report
+[Unit]
+Description=polybot feed race recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python feedrace.py record 10
+Restart=on-failure
+RestartSec=10

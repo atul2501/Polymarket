@@ -225,6 +225,10 @@ def main():
     assert bot._fak("tok", "BUY", 0.55, 5)[0] == 0
     bot.c = FakeClient({"success": True, "status": "matched", "orderID": "0x1", "makingAmount": "1.0", "takingAmount": "7.69"})
     assert bot.buy("tok", 0.12, 5)[0] == 7.69                                        # $1 minimum: 7.7 sh at 0.13
+    from live import buy_size                                                        # whole cents: 11.12 x 0.09 was rejected
+    assert buy_size(11.12, 0.09) == 12 and buy_size(10, 0.88) == 10 and buy_size(7.7, 0.13) == 8
+    assert all(round(buy_size(s, p) * p * 100, 6) % 1 == 0 and buy_size(s, p) >= s
+               for s in (5, 7.7, 10, 10.86, 11.12) for p in (0.05, 0.09, 0.13, 0.5, 0.67, 0.97))
 
     # live sell: never more than the wallet holds; selling all of it closes the recorded size (fee taken in shares)
     sent = []

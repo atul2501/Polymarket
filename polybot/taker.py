@@ -45,6 +45,9 @@ MAX_SPREAD = _f("TK_MAX_SPREAD", 1.0)    # skip a side whose ask-bid is wider (2
 LOOP_SEC = _f("TK_LOOP", 0.05)
 SLOW_LOOP_MS = _f("TK_SLOW_LOOP_MS", 250)   # a loop pass longer than this is written to the signals table
 SETTLE = os.getenv("TK_SETTLE", "0") != "0"   # hold to settlement; cooldown applies per side
+# TK_SKEW (settle): max one-sided shares per round. The copied wallet's pairs earn (+$540 in 23 rounds 25 Oct) and its
+# one-sided extras lose (-$228); racesim: capping the imbalance at 20 kept the pairs and cut the extras.
+SKEW = _f("TK_SKEW", 0)
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
@@ -59,6 +62,28 @@ RECORD = os.getenv("TK_RECORD", "0" if LIVE else "1") != "0"
 REAL = os.getenv("TK_REAL", "0") != "0" and not LIVE
 CODE_DELAY, MATCH_DELAY, RESP_DELAY = _f("TK_CODE_DELAY", 0.07), _f("TK_MATCH_DELAY", 0.20), _f("TK_RESP_DELAY", 0.15)
 PAD = _f("TK_SLIP", 0.02)                    # limit = ask + PAD on buys, bid - PAD on sells (same name as live.py)
+# 25 Oct 07:27: paper bought at 0.06 (match assumed at +340 ms), live's order took 571 ms and found the cheap shares gone
+# (129 -> 15 shares in 250 ms: other bots took them). So paper follows live's real order times, and needs room in the
+# queue: QUEUE x our shares must sit at the price for a fill (others ahead of us take the rest).
+MATCH_FROM = os.getenv("TK_MATCH_FROM", "")  # a live ledger: match delay = 75th pct of its last 30 order calls - 25 ms
+QUEUE = _f("TK_QUEUE", 1)
+_match = {"t": 0.0, "v": MATCH_DELAY}
+
+
+def match_delay():
+    """Seconds from sending an order to its match: from the live ledger's recent order calls when TK_MATCH_FROM is set."""
+    if MATCH_FROM and time.time() - _match["t"] > 60:
+        _match["t"] = time.time()
+        try:
+            db = sqlite3.connect(f"file:{MATCH_FROM}?mode=ro", uri=True, timeout=1)
+            ms = sorted(r[0] for r in db.execute("SELECT ms_order FROM signals WHERE ms_order > 0 AND outcome IN "
+                                                 "('bought', 'nofill') ORDER BY t DESC LIMIT 30"))
+            db.close()
+            if len(ms) >= 3:
+                _match["v"] = max(0.1, ms[int(len(ms) * 0.75)] / 1000 - 0.025)
+        except sqlite3.Error as e:                 # no live ledger yet: keep the last value
+            log.debug("match delay from %s: %r", MATCH_FROM, e)
+    return _match["v"]
 if REAL:
     DELAY_SEC = CODE_DELAY
 
@@ -101,7 +126,7 @@ def real_buy(limit, book, planned):
     """Paper FAK BUY at matching time: (shares, price) filled from the best ask, or (0, limit) when killed."""
     if book is None or book.ask is None or book.ask > limit + 1e-9:
         return 0.0, limit
-    got = math.floor(min(planned, book.ask_size) * 100) / 100
+    got = math.floor(min(planned, book.ask_size - (QUEUE - 1) * planned) * 100) / 100
     return (got, book.ask) if got >= 1 else (0.0, limit)
 
 
@@ -109,7 +134,7 @@ def real_sell(limit, book, left):
     """Paper FAK SELL at matching time: (shares, price) filled from the best bid, or (0, limit) when killed."""
     if book is None or book.bid is None or book.bid < limit - 1e-9:
         return 0.0, limit
-    got = math.floor(min(left, book.bid_size) * 100) / 100
+    got = math.floor(min(left, book.bid_size - (QUEUE - 1) * left) * 100) / 100
     return (got, book.bid) if got >= 0.01 else (0.0, limit)
 
 
@@ -156,6 +181,12 @@ def live():
         return {"t": now, "row": dict(slug=m.slug, side=side, bps=bps, sig_ask=b.ask, sig_bid=b.bid,
                                       sig_size=b.ask_size, t_left=t_left, bn_lag=bn.lag_ms())}
 
+    def skew_after(slug, side):
+        """One-sided shares this round if we buy SIZE more of `side` (open positions from the ledger)."""
+        held = dict(led.db.execute("SELECT side, coalesce(sum(shares), 0) FROM trades WHERE slug=? AND status='open' "
+                                   "GROUP BY side", (slug,)).fetchall())
+        return held.get(side, 0) + SIZE - held.get("Down" if side == "Up" else "Up", 0)
+
     def side_book_of(m, side):
         return books[m.up_token if side == "Up" else m.down_token]
 
@@ -183,6 +214,7 @@ def live():
                 log.info("[BTC 5m] %s position unsold at round end, left to settlement", pos[2])
                 pos = None                         # 22 Oct 18:19: never cleared, froze T-0.3 for 1.5 h
             markets = feed.current(now)
+            feed.upcoming(now)                     # next round's market + book subscription before it starts
             books = feed.books(markets)
             raw = ws.trades_since(last_seen)
             last_seen = now
@@ -203,7 +235,7 @@ def live():
                     bid = side_book[side].bid
                     if bid is not None and REAL and pid not in sell_plan:
                         sell_plan[pid] = round(max(bid - PAD, 0.01), 2)   # decided on this bid; it matches MATCH_DELAY later
-                        pos = (pid, m, side, now + MATCH_DELAY, left, got)
+                        pos = (pid, m, side, now + match_delay(), left, got)
                     elif bid is not None:
                         if lx:
                             sold, px = lx.sell(token(m, side), bid, left)
@@ -224,11 +256,28 @@ def live():
                             log.info("[BTC 5m] SELL %s @ %.2f x%g | P/L %+.2f | total %+.2f", side, avg, shares, pnl,
                                      led._one("SELECT coalesce(sum(pnl),0) FROM trades WHERE status!='open'"))
                             pos = None
+                bps = bn.move_bps(MOVE_SEC, now) if t_left >= MIN_LEFT else None
+                side = signal(bps)
+                if side:
+                    ctx = context(now, m, side, bps, t_left)
+                    if pending is not None or pos is not None or matching is not None:
+                        note(ctx, "skip", "busy", dedupe=True)
+                    elif now - (last_entry[side] if SETTLE else max(last_entry.values())) < COOLDOWN:
+                        note(ctx, "skip", "cooldown", dedupe=True)
+                    elif SETTLE and SKEW and skew_after(m.slug, side) > SKEW:
+                        note(ctx, "skip", "skew", dedupe=True)
+                    elif entry_price(side_book[side], t_left) is None:   # refused at signal time, in paper too: paper used to
+                        # retry every pass until the spread closed and bought the already-priced move (25 Oct 05:51: 0.62)
+                        note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)
+                    else:
+                        pending, sig = (now + DELAY_SEC, m, side), ctx   # live (DELAY_SEC 0): ordered below in this same pass
+                        log.info("[BTC 5m] SIGNAL %s %+.1f bp in %gs -> %s (UP %s/%s)", BinanceFeed.SOURCE, bps, MOVE_SEC, side,
+                                 up.bid, up.ask)
                 if matching and matching[1].slug == m.slug and now >= matching[0]:   # TK_REAL: the order reaches the book
                     _, _, side, limit, planned = matching
                     matching = None
                     shares, px = real_buy(limit, side_book[side], planned)
-                    timing = dict(ms_to_order=CODE_DELAY * 1000, ms_order=MATCH_DELAY * 1000, ask_now=side_book[side].ask,
+                    timing = dict(ms_to_order=CODE_DELAY * 1000, ms_order=match_delay() * 1000, ask_now=side_book[side].ask,
                                   t_left=t_left)
                     if shares < 0.01:
                         note(sig, "nofill", "no_fill", **timing)
@@ -253,7 +302,7 @@ def live():
                             continue
                         if REAL:                       # paper: the order is in flight, matching later against the book then
                             limit = round(ask + PAD, 2)
-                            matching = (now + MATCH_DELAY, m, side, limit, plan_shares(limit))
+                            matching = (now + match_delay(), m, side, limit, plan_shares(limit))
                             last_entry[side] = now
                             continue
                         t_order = time.time()
@@ -274,20 +323,6 @@ def live():
                         log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)
                     else:
                         note(sig, "skip", "pos_busy" if pos else entry_block(side_book[side], t_left), t_left=t_left)
-                bps = bn.move_bps(MOVE_SEC, now) if t_left >= MIN_LEFT else None
-                side = signal(bps)
-                if side:
-                    ctx = context(now, m, side, bps, t_left)
-                    if pending is not None or pos is not None or matching is not None:
-                        note(ctx, "skip", "busy", dedupe=True)
-                    elif now - (last_entry[side] if SETTLE else max(last_entry.values())) < COOLDOWN:
-                        note(ctx, "skip", "cooldown", dedupe=True)
-                    elif DELAY_SEC == 0 and entry_price(side_book[side], t_left) is None:   # live: the order would be refused anyway
-                        note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)
-                    else:
-                        pending, sig = (now + DELAY_SEC, m, side), ctx
-                        log.info("[BTC 5m] SIGNAL Binance %+.1f bp in %gs -> %s (UP %s/%s)", bps, MOVE_SEC, side,
-                                 up.bid, up.ask)
             if now - last_log >= 300:
                 last_log = now
                 n, pnl = led.db.execute("SELECT count(*), coalesce(sum(pnl),0) FROM trades WHERE status!='open'").fetchone()
@@ -298,7 +333,7 @@ def live():
                 log.warning("slow loop pass: %.0f ms", loop_ms)
         except (requests.RequestException, ValueError, KeyError, sqlite3.Error) as e:   # a locked db killed W-0.5 22 Oct 06:00
             log.warning("api error: %r", e)
-        time.sleep(LOOP_SEC)
+        bn.wait(LOOP_SEC)                          # wakes on the next Binance update (was a fixed 50 ms sleep)
 
 
 if __name__ == "__main__":

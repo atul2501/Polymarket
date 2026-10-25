@@ -40,7 +40,7 @@ class Clock:
             raise Stop
 
 
-def run(up_book, seconds=30):
+def run(up_book, seconds=30, size=100.0):
     """Run the bot; up_book(t) -> (up_bid, up_ask). The Binance move fires once, at SIGNAL_AT. Returns the ledger."""
     clock = Clock(T0 + seconds)
     market = Market(f"btc-updown-5m-{START}", "btc", "5m", START, 300, "UPTOK", "DNTOK", config.DEFAULT_FEE)
@@ -53,16 +53,18 @@ def run(up_book, seconds=30):
     class Feed:
         def __init__(self, *a, **k): pass
         def current(self, now): return [market]
+        def upcoming(self, now): pass
 
         def books(self, markets):
             ub, ua = up_book(clock.now)
-            return {"UPTOK": Book(ub, 100.0, ua, 100.0), "DNTOK": Book(round(1 - ua, 4), 100.0, round(1 - ub, 4), 100.0)}
+            return {"UPTOK": Book(ub, size, ua, size), "DNTOK": Book(round(1 - ua, 4), size, round(1 - ub, 4), size)}
 
     class BN:
-        stale = 0
+        stale, SOURCE = 0, "binance"
         def start(self): return self
         def at(self, t): return 100_000.0
         def lag_ms(self): return 130.0
+        def wait(self, s): clock.sleep(s)
         def move_bps(self, window, now=None):
             return 3.0 if SIGNAL_AT <= clock.now < SIGNAL_AT + 0.2 else 0.0
 
@@ -108,6 +110,63 @@ class RealPaper(unittest.TestCase):
     def test_second_signal_during_the_hold_is_busy(self):
         led = run(lambda t: (0.49, 0.50))
         self.assertEqual(led.db.execute("SELECT count(*) FROM trades").fetchone()[0], 1)
+
+    def test_live_orders_in_the_signal_pass(self):
+        # live timing (no simulated delay): the order goes out in the pass that saw the signal, at that pass's ask
+        # 0.50; the next pass (50 ms later) shows 0.70. Before 25 Oct the order waited a pass (05:05:00: 144 ms).
+        first = []
+
+        def book(t):
+            if t >= SIGNAL_AT and not first:
+                first.append(t)
+            return (0.49, 0.50) if not first or t == first[0] else (0.69, 0.70)
+        saved = taker.REAL, taker.DELAY_SEC
+        taker.REAL, taker.DELAY_SEC = False, 0.0
+        try:
+            led = run(book)
+        finally:
+            taker.REAL, taker.DELAY_SEC = saved
+        self.assertAlmostEqual(led.db.execute("SELECT price FROM trades").fetchone()[0], 0.50)
+
+    def test_thin_ask_is_killed_with_queue_margin(self):
+        # 7 shares at the ask, we want 5, QUEUE 2: others ahead of us take 5 first, we get the 2 left (25 Oct 07:27)
+        saved = taker.QUEUE
+        taker.QUEUE = 2
+        try:
+            led = run(lambda t: (0.49, 0.50), size=7.0)
+        finally:
+            taker.QUEUE = saved
+        self.assertEqual(led.db.execute("SELECT shares FROM trades").fetchall(), [(2.0,)])
+        taker.QUEUE = 2
+        try:                                       # 4 shares: nothing left for us -> killed
+            self.assertEqual(run(lambda t: (0.49, 0.50), size=4.0).db.execute("SELECT count(*) FROM trades").fetchone()[0], 0)
+        finally:
+            taker.QUEUE = saved
+
+    def test_settle_skew_cap(self):
+        # hold-to-settle with TK_SKEW: a buy that would leave more one-sided shares than the cap is skipped
+        saved = taker.SETTLE, taker.SKEW
+        try:
+            taker.SETTLE, taker.SKEW = True, 6
+            self.assertEqual(run(lambda t: (0.49, 0.50)).db.execute("SELECT count(*) FROM trades").fetchone()[0], 1)   # 5 <= 6
+            taker.SKEW = 4
+            self.assertEqual(run(lambda t: (0.49, 0.50)).db.execute("SELECT count(*) FROM trades").fetchone()[0], 0)   # 5 > 4
+        finally:
+            taker.SETTLE, taker.SKEW = saved
+
+    def test_match_delay_from_live_ledger(self):
+        from ledger import Ledger
+        path = Path(tempfile.mkdtemp()) / "live.db"
+        live = Ledger(path)
+        for ms in (300, 400, 500, 600):
+            live.signal(1.0, outcome="nofill", ms_order=ms)
+        saved = taker.MATCH_FROM, dict(taker._match)
+        taker.MATCH_FROM, taker._match["t"] = str(path), 0.0
+        try:
+            self.assertAlmostEqual(taker.match_delay(), 0.575)         # 75th pct 600 ms - 25 ms
+        finally:
+            taker.MATCH_FROM = saved[0]
+            taker._match.update(saved[1])
 
     def test_helpers(self):
         b = Book(0.55, 3.0, 0.56, 3.0)

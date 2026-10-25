@@ -19,6 +19,10 @@ from feeds import BinanceFeed
 OUT = Path(os.getenv("LATMON_OUT", Path(__file__).parent / "runs" / "latency.json"))
 http = requests.Session()
 bfeed = BinanceFeed()
+SIGNAL = os.getenv("LATMON_SIGNAL", "binance")     # "deribit": measure the live bot's signal feed (Deribit) instead
+bfeed.SOURCE = SIGNAL
+TIME_URL = ("https://www.deribit.com/api/v2/public/get_time" if SIGNAL == "deribit"
+            else "https://fapi.binance.com/fapi/v1/time")
 lat = collections.deque(maxlen=720)                # (t, CLOB ms, Gamma ms, Binance REST ms), every 5 s = 1 hour
 clock = {"offset": 0.0, "samples": collections.deque(maxlen=24)}   # Binance server - local, ms; (rtt, offset)
 
@@ -35,8 +39,9 @@ def probe():
             a, _ = rtt("https://clob.polymarket.com/time")
             b, _ = rtt("https://gamma-api.polymarket.com/markets?limit=1")
             t0 = time.time()
-            c, r = rtt("https://fapi.binance.com/fapi/v1/time")
-            clock["samples"].append((c, r.json()["serverTime"] - (t0 * 1000 + c / 2)))
+            c, r = rtt(TIME_URL)
+            j = r.json()
+            clock["samples"].append((c, (j["result"] if SIGNAL == "deribit" else j["serverTime"]) - (t0 * 1000 + c / 2)))
             clock["offset"] = min(clock["samples"])[1]   # trust the fastest round trip of the last 2 min
             lat.append((time.time(), round(a, 1), round(b, 1), round(c, 1)))
         except Exception:                            # ponytail: a failed probe leaves a gap in the latency line
@@ -55,7 +60,7 @@ def snapshot(now):
         lags = [l + clock["offset"] for t, l in bfeed.lags if t > now - 60]
     step = max(1, len(pts) // 240)
     return {
-        "t": now, "offset": clock["offset"],
+        "t": now, "offset": clock["offset"], "signal": SIGNAL,
         "binance": {"price": pts[-1][1] if pts else None, "age": now - pts[-1][0] if pts else None,
                     "rate": sum(1 for p in pts if p[0] > now - 5) / 5,
                     "series": [[round(t, 2), v] for t, v in pts[::step]],
