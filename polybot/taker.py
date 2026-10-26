@@ -39,6 +39,9 @@ DELAY_SEC = _f("TK_DELAY", 0.3)          # paper stand-in for order latency (Mac
 HOLD_SEC = _f("TK_HOLD", 5)
 SIZE = _f("TK_SIZE", 10)
 MIN_ASK, MAX_ASK = _f("TK_MIN_ASK", 0.05), _f("TK_MAX_ASK", 0.95)
+# TK_SKIP_MIN-TK_SKIP_MAX: asks inside are skipped (26 Oct honest replay: 0.15-0.30 lost ~25% on $ on both hold models)
+SKIP_MIN, SKIP_MAX = _f("TK_SKIP_MIN", 1), _f("TK_SKIP_MAX", 0)
+in_band = lambda a: MIN_ASK <= a <= MAX_ASK and not SKIP_MIN <= a < SKIP_MAX
 MIN_LEFT = _f("TK_MIN_LEFT", 30)         # no entries in the last 30 s
 COOLDOWN = _f("TK_COOLDOWN", 10)
 MAX_SPREAD = _f("TK_MAX_SPREAD", 1.0)    # skip a side whose ask-bid is wider (23 Oct: bought a new round's first second at 0.83/0.91)
@@ -81,6 +84,11 @@ QUEUE = _f("TK_QUEUE", 1)
 # cheap asks are raced hardest: 25 Oct paper filled DOWN at 0.06 and 0.09 (+$7.41) where live's orders found them gone;
 # below TK_CHEAP the queue margin is TK_QUEUE_CHEAP x our shares
 CHEAP, QUEUE_CHEAP = _f("TK_CHEAP", 0.15), _f("TK_QUEUE_CHEAP", 0)
+# 26 Oct, 712 live orders vs the twin's book: live's order time (0.25-3 s) is slowest on the moves that pay, so a fill
+# at one fixed match moment kept the winners live loses (paper fills +6.2 c/sh of edge, live +2.7). Paper fills only
+# when the ask stays within the limit from 0.3 s to SAFE_SEC after the signal: 1.6 s -> +3.0 c, 85% same outcome as live.
+SAFE_SEC = _f("TK_SAFE_SEC", 0)
+SAFE_FROM = 0.3
 _match = {"t": 0.0, "v": MATCH_DELAY}
 
 
@@ -111,7 +119,7 @@ def signal(bps):
 
 def entry_price(book, t_left):
     """Ask to pay for SIZE shares, or None if the book doesn't allow an entry."""
-    if t_left < MIN_LEFT or book is None or book.ask is None or not MIN_ASK <= book.ask <= MAX_ASK:
+    if t_left < MIN_LEFT or book is None or book.ask is None or not in_band(book.ask):
         return None
     if MAX_SPREAD < 1 and (book.bid is None or book.ask - book.bid > MAX_SPREAD + 1e-9):
         return None
@@ -124,7 +132,7 @@ def entry_block(book, t_left):
         return "late"
     if book is None or book.ask is None:
         return "no_ask"
-    if not MIN_ASK <= book.ask <= MAX_ASK:
+    if not in_band(book.ask):
         return "ask_band"
     if MAX_SPREAD < 1 and (book.bid is None or book.ask - book.bid > MAX_SPREAD + 1e-9):
         return "spread"
@@ -297,10 +305,19 @@ def live():
                         pending, sig = (now + DELAY_SEC, m, side), ctx   # live (DELAY_SEC 0): ordered below in this same pass
                         log.info("[BTC 5m] SIGNAL %s %+.1f bp in %gs -> %s (UP %s/%s)", BinanceFeed.SOURCE, bps, MOVE_SEC, side,
                                  up.bid, up.ask)
-                if matching and matching[1].slug == m.slug and now >= matching[0]:   # TK_REAL: the order reaches the book
-                    _, _, side, limit, planned = matching
+                if (matching and matching[1].slug == m.slug and SAFE_SEC and now - sig["t"] >= SAFE_FROM
+                        and (side_book[matching[2]].ask or 1) > matching[3] + 1e-9):   # ran past the limit in the window
                     matching = None
-                    shares, px = real_buy(limit, side_book[side], planned)
+                    note(sig, "nofill", "ran_away", ms_to_order=CODE_DELAY * 1000, ms_order=match_delay() * 1000,
+                         ask_now=side_book[sig["row"]["side"]].ask, t_left=t_left)
+                if matching and matching[1].slug == m.slug and now >= matching[0]:   # TK_REAL: the order reaches the book
+                    _, _, side, limit, planned, filled = matching
+                    filled = filled or (*real_buy(limit, side_book[side], planned), now)
+                    if SAFE_SEC and filled[0] >= 0.01 and now < sig["t"] + SAFE_SEC:   # booked once the window is over
+                        matching = (sig["t"] + SAFE_SEC, m, side, limit, planned, filled)
+                        continue
+                    matching = None
+                    shares, px, t_match = filled
                     timing = dict(ms_to_order=CODE_DELAY * 1000, ms_order=match_delay() * 1000, ask_now=side_book[side].ask,
                                   t_left=t_left)
                     if shares < 0.01:
@@ -311,7 +328,7 @@ def live():
                         fee = taker_fee(px, shares, m.fee)
                         pid = led.record(m, "taker", Leg(side, px, shares, fee), "paper")
                         if not SETTLE:
-                            pos = (pid, m, side, now + RESP_DELAY + HOLD_SEC, shares, 0.0)
+                            pos = (pid, m, side, t_match + RESP_DELAY + HOLD_SEC, shares, 0.0)
                         log.info("[BTC 5m] BUY %s @ %.2f x%g (fee %.3f) | %ds left", side, px, shares, fee, t_left)
                 if pending and pending[1].slug == m.slug and now >= pending[0]:
                     _, _, side = pending
@@ -326,7 +343,7 @@ def live():
                             continue
                         if REAL:                       # paper: the order is in flight, matching later against the book then
                             limit = round(ask + PAD, 2)
-                            matching = (now + match_delay(), m, side, limit, plan_shares(limit))
+                            matching = (now + match_delay(), m, side, limit, plan_shares(limit), None)
                             last_entry[side] = now
                             continue
                         t_order = time.time()

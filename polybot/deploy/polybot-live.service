@@ -11,10 +11,10 @@ WorkingDirectory=/home/ec2-user/poly/polybot
 EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
 EnvironmentFile=/home/ec2-user/poly/polybot/deploy/dfast.env
 EnvironmentFile=/home/ec2-user/.polybot-secrets
-# Plain 12 s scalp (deploy/dfast.env); its paper twin is polybot-dfast (Paper-D). D-HY2 (hold if bid >= 0.85) was live
+# Plain 12 s scalp (deploy/dfast.env); its paper twin polybot-dfast (Paper-D) was removed 26 Oct (negative on honest fills). D-HY2 (hold if bid >= 0.85) was live
 # 13:57-14:45 UTC 25 Oct and reverted by the user (10 trades -$0.59; holds +$1.04, sold -$1.64); it stays on paper (polybot-dhy2).
 # Small hold (user, 25 Oct ~15:20 UTC): scalp, but a position with bid >= 0.85 at 12 s is held to settlement while the
-# total money in held positions stays <= $5 (one $5 hold at a time); everything else sold at 12 s. Paper-D = plain scalp.
+# total money in held positions stays <= $5 (one $5 hold at a time); everything else sold at 12 s.
 Environment=TK_LIVE=1 TK_LIVE_DRY=1 TK_LEDGER=runs/live-d.db TK_HOLD_IF_UP=1 TK_HOLD_MIN=0.85 TK_MAX_HELD_USD=5 PYTHONUNBUFFERED=1
 EnvironmentFile=-/home/ec2-user/.polybot-mode
 ExecStart=/home/ec2-user/venv/bin/python taker.py

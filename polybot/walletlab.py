@@ -31,8 +31,14 @@ CACHE = Path(__file__).parent / "runs" / "wallet_fills.json"
 def round_fills(http, cond, taker_only):
     out = []
     for off in range(0, 10000, 500):
-        page = http.get(DATA, params={"user": WALLET, "market": cond, "limit": 500, "offset": off,
-                                      "takerOnly": str(taker_only).lower(), "_": int(time.time())}, timeout=20).json()
+        for _ in range(5):                         # 26 Oct: a rate-limit answer is a dict, not a list of fills
+            page = http.get(DATA, params={"user": WALLET, "market": cond, "limit": 500, "offset": off,
+                                          "takerOnly": str(taker_only).lower(), "_": int(time.time())}, timeout=20).json()
+            if isinstance(page, list):
+                break
+            time.sleep(5)
+        else:
+            raise RuntimeError(f"data-api: {page!r}"[:200])
         out += page
         if len(page) < 500:
             break

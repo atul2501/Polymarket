@@ -1,0 +1,18 @@
+# D-FAV1 (paper): Deribit 1.0 bp in 3 s toward the side priced 0.50-0.90 (the favourite), hold to settlement.
+# 25 Oct honest-fill replay (13.9 h): 632 tr +$179 +7.8%/$, all thirds +, +$101 without best 5 rounds, ~$12/round.
+[Unit]
+Description=polybot D-FAV1 favourite hold (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+EnvironmentFile=/home/ec2-user/poly/polybot/realistic.env
+Environment=TK_LEDGER=runs/fav1.db TK_MATCH_DELAY=0.8 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.50 TK_MAX_ASK=0.90 TK_COOLDOWN=2 TK_SIZE=5 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=1.0 TK_MOVE_SEC=3 TK_SKEW=0 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

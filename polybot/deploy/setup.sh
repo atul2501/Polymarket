@@ -23,8 +23,8 @@ mkdir -p runs
 chronyc tracking | grep -E "System time|Leap"   # Polymarket rejects orders with a skewed clock
 sudo cp deploy/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now polybot-dfast polybot-dhy2 polybot-dhy3 polybot-ds03 polybot-ds03n polybot-latmon polybot-dash
-sudo systemctl restart polybot-dfast polybot-dhy2 polybot-dhy3 polybot-ds03 polybot-ds03n polybot-latmon polybot-dash   # pick up synced code
+sudo systemctl enable --now polybot-dhy2 polybot-ds03 polybot-ds03n polybot-ds03nx polybot-fav1 polybot-fav2 polybot-fav3 polybot-latmon polybot-dash
+sudo systemctl restart polybot-dhy2 polybot-ds03 polybot-ds03n polybot-ds03nx polybot-fav1 polybot-fav2 polybot-fav3 polybot-latmon polybot-dash   # pick up synced code
 if [ -f ~/.polybot-secrets ]; then
   chmod 600 ~/.polybot-secrets
   sudo systemctl enable polybot-live && sudo systemctl restart polybot-live
