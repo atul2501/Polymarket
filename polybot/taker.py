@@ -65,6 +65,11 @@ MAX_HELD_USD = _f("TK_MAX_HELD_USD", 0)
 # TK_MAX_ROUND_USD: money put into one round (all trades of that market) never above this. 26 Oct replay, D-FAV1/2:
 # $10 keeps +4.8/+5.6 %/$ in both halves and cuts the worst round -$16 -> -$9; $5 kills the edge (later buys earn it)
 MAX_ROUND_USD = _f("TK_MAX_ROUND_USD", 0)
+# TK_MAX_DIST (settle): buy only while the round is undecided, |signal-feed mid / price to beat - 1| <= this many bp
+# (price to beat = mean signal-feed mid over the 60 s before the round). TK_MAX_PER_SIDE: at most this many fills per side
+# per round. 27 Oct replay (452 rounds, test = last 91): W-SNIPE-DOG + dist<=3, cap 6, 0.3 bp, 2 s cooldown kept
+# +14.9 %/$ and turned -13.3 % without the best 5 rounds into +3.5 %, max drawdown -$93 -> -$40. 0 = off.
+MAX_DIST, MAX_PER_SIDE = _f("TK_MAX_DIST", 0), int(_f("TK_MAX_PER_SIDE", 0))
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
@@ -210,6 +215,17 @@ def live():
     last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_log = time.time(), 0.0, 0.0
     sig, skipped = None, {}   # sig: the pending signal (t, row of book values at signal time); skipped: dedupe times
+    secs, beats = {}, {}      # TK_MAX_DIST: signal-feed mid per second (forward-filled), price to beat per round
+
+    def dist_bp(m, now):
+        """|signal-feed mid vs the round's price to beat| in bp, or None until 30 s of the minute before it are seen."""
+        if m.slug not in beats:
+            v = [secs[k] for k in range(m.start - 60, m.start) if k in secs]
+            if len(v) < 30:
+                return None
+            beats[m.slug] = sum(v) / len(v)
+        spot = bn.at(now, max_age=300)
+        return abs(spot / beats[m.slug] - 1) * 1e4 if spot else None
 
     def context(now, m, side, bps, t_left):
         b = side_book_of(m, side)
@@ -248,6 +264,10 @@ def live():
             if pos and now >= pos[1].end:          # unsold at round end (no bid): the settler books it; stop holding
                 log.info("[BTC 5m] %s position unsold at round end, left to settlement", pos[2])
                 pos = None                         # 22 Oct 18:19: never cleared, froze T-0.3 for 1.5 h
+            if MAX_DIST and int(now) not in secs and (v := bn.at(now, max_age=300)):
+                secs[int(now)] = v
+                for k in [k for k in secs if k < now - 400]:
+                    del secs[k]
             markets = feed.current(now)
             feed.upcoming(now)                     # next round's market + book subscription before it starts
             books = feed.books(markets)
@@ -311,6 +331,11 @@ def live():
                         note(ctx, "skip", "skew", dedupe=True)
                     elif MAX_ROUND_USD and round_full(led, m.slug, side_book[side].ask):
                         note(ctx, "skip", "round_cap", dedupe=True)
+                    elif MAX_PER_SIDE and led._one("SELECT count(*) FROM trades WHERE slug=? AND side=?",
+                                                   m.slug, side) >= MAX_PER_SIDE:
+                        note(ctx, "skip", "side_cap", dedupe=True)
+                    elif MAX_DIST and not ((d := dist_bp(m, now)) is not None and d <= MAX_DIST):
+                        note(ctx, "skip", "decided" if d is not None else "no_beat", dedupe=True)
                     elif entry_price(side_book[side], t_left) is None:   # refused at signal time, in paper too: paper used to
                         # retry every pass until the spread closed and bought the already-priced move (25 Oct 05:51: 0.62)
                         note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)

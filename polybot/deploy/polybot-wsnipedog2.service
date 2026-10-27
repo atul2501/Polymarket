@@ -1,0 +1,16 @@
+# W-SNIPE-DOG2 (paper): W-SNIPE-DOG + round still undecided (|Deribit - price to beat| <= 3 bp), <= 6 fills per side per round,
+# 0.3 bp trigger, 2 s cooldown. Replay 27 Oct, test = last 91 rounds: +14.9 %/$, +3.5 % w/o best 5 rounds (DOG: -13.3 %), all thirds +.
+[Unit]
+Description=polybot W-SNIPE-DOG2: W-SNIPE-DOG on undecided rounds, capped per side (paper)
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+# realistic.env is NOT loaded: its values would override the fast timing below (EnvironmentFile wins over Environment=)
+Environment=TK_LEDGER=runs/wsnipedog2.db TK_REAL=1 TK_CODE_DELAY=0.005 TK_RESP_DELAY=0.03 TK_SLIP=0 TK_MAX_SPREAD=0.03 BN_MAX_LAG_MS=300 TK_SAFE_SEC=0 TK_MATCH_DELAY=0.25 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.10 TK_MAX_ASK=0.49 TK_COOLDOWN=2 TK_MAX_DIST=3 TK_MAX_PER_SIDE=6 TK_SIZE=5 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.3 TK_MOVE_SEC=0.5 TK_SKEW=0 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

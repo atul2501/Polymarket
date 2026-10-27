@@ -1,0 +1,18 @@
+# DOG-AI (paper, shadow): W-SNIPE-DOG's trades kept only when the frozen wallet-imitation model (dogai_model.json) says
+# the copied wallet would buy there too. Lab 27 Oct, test = last 88 rounds: +23.6 %/$, thirds +28 / +10 / +27, +3.0 %
+# without the best 5 rounds (W-SNIPE-DOG alone -10.7 %). Forward test: scores only signals after 27 Oct 00:55 UTC.
+# Needs polybot-wsnipedog and polybot-feedrace running; writes runs/dogai.db.
+[Unit]
+Description=polybot DOG-AI: W-SNIPE-DOG filtered by the wallet-imitation model (paper, shadow)
+After=polybot-wsnipedog.service polybot-feedrace.service
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python dogai.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
