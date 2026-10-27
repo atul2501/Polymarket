@@ -62,6 +62,9 @@ HOLD_MIN, MAX_HOLDS = _f("TK_HOLD_MIN", 0), int(_f("TK_MAX_HOLDS", 99))
 # TK_MAX_HELD_USD: total money in held positions (all rounds) never above this; e.g. 5 with $5 trades = one hold at a time,
 # so a hold can never cost more than ~$5 (user, 25 Oct: "hold to settlement only with a small amount")
 MAX_HELD_USD = _f("TK_MAX_HELD_USD", 0)
+# TK_MAX_ROUND_USD: money put into one round (all trades of that market) never above this. 26 Oct replay, D-FAV1/2:
+# $10 keeps +4.8/+5.6 %/$ in both halves and cuts the worst round -$16 -> -$9; $5 kills the edge (later buys earn it)
+MAX_ROUND_USD = _f("TK_MAX_ROUND_USD", 0)
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
 if LIVE:
@@ -160,6 +163,14 @@ def real_sell(limit, book, left):
     q = QUEUE_CHEAP if QUEUE_CHEAP and book.bid < CHEAP else QUEUE   # cheap bids are raced as hard as cheap asks
     got = math.floor(min(left, book.bid_size - (q - 1) * left) * 100) / 100
     return (got, book.bid) if got >= 0.01 else (0.0, limit)
+
+
+def round_full(led, slug, ask, cap=None):
+    """True when one more buy at `ask` (limit ask + PAD) would put this round's money over TK_MAX_ROUND_USD."""
+    cap = MAX_ROUND_USD if cap is None else cap
+    spent = led._one("SELECT coalesce(sum(cost), 0) FROM trades WHERE slug=?", slug)
+    lim = round(ask + PAD, 2) if ask is not None else None
+    return lim is not None and spent + plan_shares(lim) * lim > cap + 1e-9
 
 
 def token(m, side):
@@ -298,6 +309,8 @@ def live():
                         note(ctx, "skip", "cooldown", dedupe=True)
                     elif SETTLE and SKEW and skew_after(m.slug, side) > SKEW:
                         note(ctx, "skip", "skew", dedupe=True)
+                    elif MAX_ROUND_USD and round_full(led, m.slug, side_book[side].ask):
+                        note(ctx, "skip", "round_cap", dedupe=True)
                     elif entry_price(side_book[side], t_left) is None:   # refused at signal time, in paper too: paper used to
                         # retry every pass until the spread closed and bought the already-priced move (25 Oct 05:51: 0.62)
                         note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)

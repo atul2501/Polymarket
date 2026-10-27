@@ -1,6 +1,7 @@
 """Which BTC feed shows a move first at THIS server, and how long before Polymarket's book moves? Read-only, no keys.
 
-    python feedrace.py record [hours]     every feed's best bid/ask + Polymarket BTC 5m UP book -> runs/feedrace.db
+    python feedrace.py record [hours]     every feed's best bid/ask, Chainlink BTC/USD (feed "chainlink") +
+                                          Polymarket BTC 5m UP book -> runs/feedrace.db
     python feedrace.py report [db]        per feed: delay, lead vs Binance futures on the same moves, head start
                                           before Polymarket, and the "first of all feeds" signal
 
@@ -24,7 +25,7 @@ from pathlib import Path
 import requests
 import websockets
 
-from feeds import CTX, BookFeed
+from feeds import CTX, BookFeed, ChainlinkFeed
 from market import MarketFeed
 
 DB = Path(__file__).parent / "runs" / "feedrace.db"
@@ -105,6 +106,19 @@ async def feed(name):
             await asyncio.sleep(2)
 
 
+async def chainlink():
+    """Chainlink BTC/USD (what the markets settle on): each new 1 s point once, its own time (ms) in `ex`.
+    The price to beat of a round = mean of the 60 points before its start (spot.SpotFeed.view does the same)."""
+    cl, seen = ChainlinkFeed(["btc/usd"]).start(), 0
+    while True:
+        await asyncio.sleep(0.2)
+        with cl.lock:
+            new = sorted((t, p) for t, p in cl.points["btc/usd"].items() if t > seen)
+        for t, p in new:
+            ROWS.append(("quotes", (time.time(), "chainlink", p, t * 1000)))
+            seen = t
+
+
 def polymarket():
     """Every change of the current BTC 5m UP best bid/ask, polled from the book socket every 5 ms (own thread)."""
     ws = BookFeed().start()
@@ -151,7 +165,7 @@ async def record(hours):
                      "CREATE TABLE IF NOT EXISTS events(t REAL, feed TEXT, what TEXT);"
                      "CREATE TABLE IF NOT EXISTS prints(t REAL, slug TEXT, outcome TEXT, price REAL, size REAL, side TEXT);")
     threading.Thread(target=polymarket, daemon=True).start()
-    tasks = [asyncio.create_task(feed(n)) for n in FEEDS]
+    tasks = [asyncio.create_task(feed(n)) for n in FEEDS] + [asyncio.create_task(chainlink())]
     await flush(db, time.time() + hours * 3600)
     for t in tasks:
         t.cancel()

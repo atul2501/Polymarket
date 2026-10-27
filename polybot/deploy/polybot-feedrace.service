@@ -1,7 +1,8 @@
-# Feed race (read-only): records 9 BTC feeds + the Polymarket book for 10 h (through the US open), then exits. Not enabled at boot.
-#   sudo systemctl start polybot-feedrace      then later: ~/venv/bin/python feedrace.py report
+# Price recorder (read-only, no keys), always on since 26 Oct: Deribit + 8 other BTC feeds, Chainlink BTC/USD (what the
+# markets settle on), the Polymarket BTC 5m UP book and every trade print -> runs/feedrace.db (~50 MB/day).
+# Feeds model research: settlesim.py, racesim.py, walletlab.py, feedrace.py report.
 [Unit]
-Description=polybot feed race recorder
+Description=polybot price recorder (feeds + Chainlink + Polymarket book)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +10,9 @@ Wants=network-online.target
 User=ec2-user
 WorkingDirectory=/home/ec2-user/poly/polybot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/ec2-user/venv/bin/python feedrace.py record 10
-Restart=on-failure
+ExecStart=/home/ec2-user/venv/bin/python feedrace.py record 87600
+Restart=always
 RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

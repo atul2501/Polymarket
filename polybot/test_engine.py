@@ -255,6 +255,14 @@ def main():
     led.db.execute("UPDATE trades SET cost = 5 WHERE status = 'open'")
     assert bot.blocked_reason(led) is None                                          # $3 + $5 < $15
 
+    # round cap: $10 per market; this round has $13 in (cap.db above), a fresh round $0
+    import taker
+    led.db.execute("UPDATE trades SET slug = 'r1'")
+    assert taker.round_full(led, "r1", 0.50, cap=20) is False                       # 13 + 5 x 0.54 = 15.7 <= 20
+    assert taker.round_full(led, "r1", 0.50, cap=15) is True                        # 15.7 > 15
+    assert taker.round_full(led, "r2", 0.80, cap=10) is False                       # 5 x 0.84 = 4.2
+    assert taker.round_full(led, "r2", None, cap=10) is False                       # no ask: entry_price says why
+
     print("ok")
 
 

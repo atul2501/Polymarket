@@ -9,10 +9,8 @@
 #   sudo dnf -y install git && git clone -b live-gap-fix https://github.com/atul2501/Polymarket.git ~/poly
 #   bash ~/poly/polybot/deploy/setup.sh            later updates: git -C ~/poly pull && bash ~/poly/polybot/deploy/setup.sh
 #
-# Never run polybot-live on two servers with the same wallet: both would trade. Stop it on the old one first.
-#
-# Starts the paper twin, latency monitor and dashboard. The live bot starts only once ~/.polybot-secrets exists,
-# and then in LIVE-DRY mode (see polybot-live.service to go live).
+# Starts the paper bots, price recorder, latency monitor and dashboard. No live bot: Live-D (D-fast scalp) was removed
+# 26 Oct after -$8.62 on 246 real trades. A future live unit must never run on two servers with the same wallet.
 set -eu
 cd "$(dirname "$0")/.."
 sudo dnf -y -q install python3.11 python3.11-pip sqlite rsync
@@ -23,13 +21,7 @@ mkdir -p runs
 chronyc tracking | grep -E "System time|Leap"   # Polymarket rejects orders with a skewed clock
 sudo cp deploy/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now polybot-dhy2 polybot-ds03 polybot-ds03n polybot-ds03nx polybot-fav1 polybot-fav2 polybot-fav3 polybot-latmon polybot-dash
-sudo systemctl restart polybot-dhy2 polybot-ds03 polybot-ds03n polybot-ds03nx polybot-fav1 polybot-fav2 polybot-fav3 polybot-latmon polybot-dash   # pick up synced code
-if [ -f ~/.polybot-secrets ]; then
-  chmod 600 ~/.polybot-secrets
-  sudo systemctl enable polybot-live && sudo systemctl restart polybot-live
-  echo "live: $(grep -h TK_LIVE_DRY ~/.polybot-mode 2>/dev/null || echo 'TK_LIVE_DRY=1 (dry)')"
-else
-  echo "no ~/.polybot-secrets yet: cp secrets.env.example ~/.polybot-secrets, fill it in, re-run this script"
-fi
+sudo systemctl enable --now polybot-wclonefast polybot-wsnipe polybot-wsnipeslow polybot-feedrace polybot-latmon polybot-dash
+sudo systemctl restart polybot-wclonefast polybot-wsnipe polybot-wsnipeslow polybot-feedrace polybot-latmon polybot-dash   # pick up synced code
+[ -f ~/.polybot-secrets ] && chmod 600 ~/.polybot-secrets   # wallet key, kept for a future live test
 systemctl --no-pager -n0 status 'polybot-*' | grep -E "●|Active"

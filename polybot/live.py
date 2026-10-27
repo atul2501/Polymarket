@@ -67,6 +67,9 @@ class Live:
         self.dry = os.getenv("TK_LIVE_DRY", "0") != "0"
         self.c = Client(HOST, CHAIN, key=os.environ["PM_PRIVATE_KEY"], funder=os.environ["PM_FUNDER"],
                         signature_type=int(os.environ["PM_SIGNATURE_TYPE"]))
+        # py_clob_client_v2 1.2.1 post_order polls get_trades every 0.25 s (up to 30 s) after a match for settlement tx
+        # hashes we never use; fills come from makingAmount/takingAmount in the first reply. That wait blocked the loop
+        self.c._resolve_transactions_hashes = lambda r: r
         self.checked = self.published = 0.0
         self.balance = None                           # cached USDC, refreshed every minute, minus our own buys
         self.bn = None                                # taker.py sets its BinanceFeed here

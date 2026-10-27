@@ -1,0 +1,20 @@
+# W-SNIPE (paper): the wallet clone (Deribit 0.2 bp in 0.5 s -> buy that side, both sides, ask .10-.90, hold to
+# settlement) with the limit at EXACTLY the ask like the wallet (TK_SLIP=0; our 1-4c pad bought 83% of live fills above
+# the sent ask) and fills 0.25 s after the signal = the live speed measured 26 Oct (20 real orders: POST median 240 ms). Replay 26 Oct (spray.py, 134 rounds): +2.7 %/$ at
+# 0.2 s, +1.4 at 0.35 s, ~0 at 0.5 s.
+[Unit]
+Description=polybot W-SNIPE wallet clone at real order speed (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+# realistic.env is NOT loaded: its values would override the fast timing below (EnvironmentFile wins over Environment=)
+Environment=TK_LEDGER=runs/wsnipe.db TK_REAL=1 TK_CODE_DELAY=0.005 TK_RESP_DELAY=0.03 TK_SLIP=0 TK_MAX_SPREAD=0.03 BN_MAX_LAG_MS=300 TK_SAFE_SEC=0 TK_MATCH_DELAY=0.25 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.10 TK_MAX_ASK=0.90 TK_COOLDOWN=0.5 TK_SIZE=5 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.2 TK_MOVE_SEC=0.5 TK_SKEW=0 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
