@@ -12,13 +12,14 @@ Features mirror the lab's mlbuild.py exactly (same windows, staleness, NaN rules
     python dogai.py              run (systemd: polybot-dogai)
     python dogai.py check        self-check
 """
-import bisect, json, math, sqlite3, sys, time
+import bisect, json, math, os, sqlite3, sys, time
 from array import array
 from pathlib import Path
 
 HERE = Path(__file__).parent
 RUNS = HERE / "runs"
-FR, SRC, OUT, LOG = RUNS / "feedrace.db", RUNS / "wsnipedog.db", RUNS / "dogai.db", RUNS / "dogai.log"
+FR, SRC, OUT = RUNS / "feedrace.db", RUNS / os.getenv("DOGAI_SRC", "wsnipedog.db"), RUNS / os.getenv("DOGAI_OUT", "dogai.db")
+LOG = OUT.with_suffix(".log")                                      # DOGAI_SRC/OUT: filter another W-SNIPE-DOG ledger
 FEEDS = ["deribit", "binance-fut", "binance-spot", "coinbase", "bybit", "okx", "kraken", "bitstamp", "hyperliquid", "chainlink"]
 WINS = (0.5, 1, 2, 5, 15, 60)
 LAG, LOOP = 15, 10

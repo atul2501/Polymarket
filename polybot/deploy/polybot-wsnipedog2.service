@@ -8,7 +8,7 @@ Wants=network-online.target
 User=ec2-user
 WorkingDirectory=/home/ec2-user/poly/polybot
 # realistic.env is NOT loaded: its values would override the fast timing below (EnvironmentFile wins over Environment=)
-Environment=TK_LEDGER=runs/wsnipedog2.db TK_REAL=1 TK_CODE_DELAY=0.005 TK_RESP_DELAY=0.03 TK_SLIP=0 TK_MAX_SPREAD=0.03 BN_MAX_LAG_MS=300 TK_SAFE_SEC=0 TK_MATCH_DELAY=0.25 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.10 TK_MAX_ASK=0.49 TK_COOLDOWN=2 TK_MAX_DIST=3 TK_MAX_PER_SIDE=6 TK_SIZE=5 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.3 TK_MOVE_SEC=0.5 TK_SKEW=0 PYTHONUNBUFFERED=1
+Environment=TK_NAME=wsnipedog2 TK_LEDGER=runs/wsnipedog2.db TK_REAL=1 TK_CODE_DELAY=0.005 TK_RESP_DELAY=0.03 TK_SLIP=0 TK_MAX_SPREAD=0.03 BN_MAX_LAG_MS=300 TK_SAFE_SEC=0 TK_MATCH_DELAY=0.25 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.10 TK_MAX_ASK=0.49 TK_COOLDOWN=2 TK_MAX_DIST=3 TK_MAX_PER_SIDE=6 TK_SIZE=5 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.3 TK_MOVE_SEC=0.5 TK_SKEW=0 PYTHONUNBUFFERED=1
 ExecStart=/home/ec2-user/venv/bin/python taker.py
 Restart=always
 RestartSec=10

@@ -1,0 +1,16 @@
+# W-LEARN (paper): W-SNIPE-DOG2 + the self-learning filter (selflearn.py): buy only when the nightly re-trained model says
+# P(side wins) - ask - fee >= margin. No runs/wlearn_model.json yet = trades exactly like W-SNIPE-DOG2.
+[Unit]
+Description=polybot W-LEARN: W-SNIPE-DOG2 + nightly self-learning filter (paper)
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+# realistic.env is NOT loaded: its values would override the fast timing below (EnvironmentFile wins over Environment=)
+Environment=TK_NAME=wlearn TK_LEDGER=runs/wlearn.db TK_AI=runs/wlearn_model.json TK_REAL=1 TK_CODE_DELAY=0.005 TK_RESP_DELAY=0.03 TK_SLIP=0 TK_MAX_SPREAD=0.03 BN_MAX_LAG_MS=300 TK_SAFE_SEC=0 TK_MATCH_DELAY=0.25 TK_QUEUE=5 TK_QUEUE_CHEAP=5 TK_SETTLE=1 TK_MIN_ASK=0.10 TK_MAX_ASK=0.49 TK_COOLDOWN=2 TK_MAX_DIST=3 TK_MAX_PER_SIDE=6 TK_SIZE=1 BN_SOURCE=deribit BN_SOCKETS=1 TK_MOVE_BPS=0.3 TK_MOVE_SEC=0.5 TK_SKEW=0 PYTHONUNBUFFERED=1
+ExecStart=/home/ec2-user/venv/bin/python taker.py
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

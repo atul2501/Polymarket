@@ -31,9 +31,11 @@ from engine import Leg, Snapshot, taker_fee
 from feeds import BinanceFeed, BookFeed
 from ledger import Ledger
 from market import MarketFeed
+from selflearn import Model as AIModel, feats
 
 log = logging.getLogger("taker")
 _f = lambda k, d: float(os.getenv(k, d))
+_read = lambda p: p.read_text() if p.exists() else ""
 MOVE_BPS, MOVE_SEC = _f("TK_MOVE_BPS", 2), _f("TK_MOVE_SEC", 1)
 DELAY_SEC = _f("TK_DELAY", 0.3)          # paper stand-in for order latency (Mac -> Polymarket ~0.17 s)
 HOLD_SEC = _f("TK_HOLD", 5)
@@ -70,8 +72,23 @@ MAX_ROUND_USD = _f("TK_MAX_ROUND_USD", 0)
 # per round. 27 Oct replay (452 rounds, test = last 91): W-SNIPE-DOG + dist<=3, cap 6, 0.3 bp, 2 s cooldown kept
 # +14.9 %/$ and turned -13.3 % without the best 5 rounds into +3.5 %, max drawdown -$93 -> -$40. 0 = off.
 MAX_DIST, MAX_PER_SIDE = _f("TK_MAX_DIST", 0), int(_f("TK_MAX_PER_SIDE", 0))
+# TK_AI: W-LEARN model file (selflearn.py, re-trained nightly): buy only when P(side wins) - ask - fee >= its margin.
+# Re-read when the file changes (checked once a minute); no file = trade like the base bot.
+AI_PATH = os.getenv("TK_AI", "")
 LEDGER = Path(os.getenv("TK_LEDGER", Path(__file__).parent / "runs" / "taker.db"))
 LIVE = os.getenv("TK_LIVE", "0") != "0"
+# Per-bot switch (deploy/mode.sh): ~/.polybot-modes lines "<TK_NAME>=paper|dry|live", read at start; missing = paper.
+# dry/live trade through live.py with ~/.polybot-secrets into their own ledger (<name>live.db, <name>dry.db), paper history untouched.
+MODE = next((v.strip() for k, _, v in (ln.partition("=") for ln in _read(Path.home() / ".polybot-modes").splitlines())
+             if k.strip() == os.getenv("TK_NAME")), "paper") if os.getenv("TK_NAME") else "paper"
+if MODE in ("dry", "live"):
+    LIVE, LEDGER = True, LEDGER.with_name(LEDGER.stem + MODE + ".db")
+    os.environ["TK_LIVE_DRY"] = "1" if MODE == "dry" else "0"
+    for k, _, v in (ln.partition("=") for ln in _read(Path.home() / ".polybot-secrets").splitlines()):
+        if v and not k.lstrip().startswith("#"):
+            os.environ[k.strip()] = v.strip()
+elif MODE != "paper":
+    raise SystemExit(f"~/.polybot-modes: {os.getenv('TK_NAME')}={MODE}, expected paper, dry or live")
 if LIVE:
     DELAY_SEC = 0.0                          # real orders pay the real network delay, no simulated one
 # books/Binance/prints for replays, committed every pass; off by default when live (a paper twin records them)
@@ -193,6 +210,7 @@ def settler():
                     log.info("SETTLED %s -> %s", slug, w)
         except (requests.RequestException, ValueError, KeyError, sqlite3.Error) as e:   # "database is locked" killed it 21 Oct 23:14
             log.warning("settle error: %r", e)
+            led.db.rollback()   # a timed-out UPDATE left its transaction open: stale snapshot, every retry "locked" (30 Oct 22:34)
         time.sleep(30)
 
 
@@ -212,20 +230,21 @@ def live():
         lx = Live()
         lx.bn = bn
     blocked_log = 0.0
+    ai = {"m": None, "mtime": None, "t": 0.0}
     last_entry = {"Up": 0.0, "Down": 0.0}
     last_seen, last_tick, last_log = time.time(), 0.0, 0.0
     sig, skipped = None, {}   # sig: the pending signal (t, row of book values at signal time); skipped: dedupe times
     secs, beats = {}, {}      # TK_MAX_DIST: signal-feed mid per second (forward-filled), price to beat per round
 
     def dist_bp(m, now):
-        """|signal-feed mid vs the round's price to beat| in bp, or None until 30 s of the minute before it are seen."""
+        """Signal-feed mid vs the round's price to beat in bp (+ = above, toward Up), or None until 30 s of the minute before it are seen."""
         if m.slug not in beats:
             v = [secs[k] for k in range(m.start - 60, m.start) if k in secs]
             if len(v) < 30:
                 return None
             beats[m.slug] = sum(v) / len(v)
         spot = bn.at(now, max_age=300)
-        return abs(spot / beats[m.slug] - 1) * 1e4 if spot else None
+        return (spot / beats[m.slug] - 1) * 1e4 if spot else None
 
     def context(now, m, side, bps, t_left):
         b = side_book_of(m, side)
@@ -237,6 +256,22 @@ def live():
         held = dict(led.db.execute("SELECT side, coalesce(sum(shares), 0) FROM trades WHERE slug=? AND status='open' "
                                    "GROUP BY side", (slug,)).fetchall())
         return held.get(side, 0) + SIZE - held.get("Down" if side == "Up" else "Up", 0)
+
+    def ai_skip(m, side, bps, t_left, now):
+        """W-LEARN: P(side wins) when the model says no, else None (no model, no price to beat yet, or a buy)."""
+        if AI_PATH and now - ai["t"] > 60:
+            ai["t"] = now
+            mt = os.path.getmtime(AI_PATH) if os.path.exists(AI_PATH) else None
+            if mt != ai["mtime"]:
+                ai["m"], ai["mtime"] = AIModel.load(AI_PATH), mt
+                log.info("W-LEARN model %s", f"loaded ({AI_PATH})" if ai["m"] else "absent: base rules only")
+        b, d = side_book_of(m, side), dist_bp(m, now)
+        if ai["m"] is None or d is None or b.ask is None:
+            return None
+        n = led._one("SELECT count(*) FROM trades WHERE slug=? AND side=?", m.slug, side)
+        x = feats(bps, b.ask, b.bid, b.ask_size, t_left, d if side == "Up" else -d, n, bn.lag_ms())
+        p = ai["m"].p(x)
+        return None if p - b.ask - taker_fee(b.ask, 1, m.fee) >= ai["m"].margin else p
 
     def side_book_of(m, side):
         return books[m.up_token if side == "Up" else m.down_token]
@@ -334,8 +369,10 @@ def live():
                     elif MAX_PER_SIDE and led._one("SELECT count(*) FROM trades WHERE slug=? AND side=?",
                                                    m.slug, side) >= MAX_PER_SIDE:
                         note(ctx, "skip", "side_cap", dedupe=True)
-                    elif MAX_DIST and not ((d := dist_bp(m, now)) is not None and d <= MAX_DIST):
+                    elif MAX_DIST and not ((d := dist_bp(m, now)) is not None and abs(d) <= MAX_DIST):
                         note(ctx, "skip", "decided" if d is not None else "no_beat", dedupe=True)
+                    elif (p := ai_skip(m, side, bps, t_left, now)) is not None:
+                        note(ctx, "skip", f"ai p={p:.2f}", dedupe=True)
                     elif entry_price(side_book[side], t_left) is None:   # refused at signal time, in paper too: paper used to
                         # retry every pass until the spread closed and bought the already-priced move (25 Oct 05:51: 0.62)
                         note(ctx, "skip", entry_block(side_book[side], t_left), dedupe=True)

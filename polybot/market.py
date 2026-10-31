@@ -101,7 +101,10 @@ class MarketFeed:
             live = {t: self.ws.book(t) for t in tokens}
             if all(live.values()):
                 return live
-        raw = self.http.post(f"{config.CLOB}/books", json=[{"token_id": t} for t in tokens], timeout=10).json()
+        r = self.http.post(f"{config.CLOB}/books", json=[{"token_id": t} for t in tokens], timeout=10)
+        raw = r.json()
+        if not isinstance(raw, list):              # an error object (29 Oct London: crashed every bot ~30 s): callers skip the pass
+            raise ValueError(f"/books {r.status_code}: {r.text[:200]}")
         return {r["asset_id"]: parse_book(r) for r in raw}
 
     def outcome(self, slug):

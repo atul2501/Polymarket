@@ -1,0 +1,13 @@
+# W-LEARN nightly re-train (selflearn.py train): fit on W-SNIPE-DOG2's settled trades, exam on the newest day, replace
+# runs/wlearn_model.json only if it passes; one line per night in runs/wlearn_history.jsonl. Run by polybot-learn.timer.
+[Unit]
+Description=polybot W-LEARN nightly re-train
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/poly/polybot
+Environment=PYTHONUNBUFFERED=1 LEARN_DAYS=30
+ExecStart=-/home/ec2-user/venv/bin/python selflearn.py train
+# live learner: trains on the live bot's real trades (fails quietly where no live ledger exists); selflearn.py compare
+ExecStart=-/usr/bin/env LEARN_SRC=wsnipedog2live.db LEARN_MIDS=feedrace.db LEARN_OUT=wlearnlive /home/ec2-user/venv/bin/python selflearn.py train
